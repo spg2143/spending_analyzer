@@ -1,0 +1,80 @@
+<!-- static/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Small Business Spend Analyzer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>Small Business Spend Analyzer</h1>
+      <p class="subtitle">
+        Upload your bank statement (CSV, Excel, or PDF) to see where your money goes.
+      </p>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <h2>1. Upload your statement</h2>
+        <form id="upload-form">
+          <label for="statement">Bank statement file</label>
+          <input
+            type="file"
+            id="statement"
+            name="statement"
+            accept=".csv,.xlsx,.xls,.pdf"
+            required
+          />
+          <p class="hint">
+            Supported formats: <strong>CSV</strong>, <strong>Excel</strong> (.xlsx/.xls), and
+            <strong>PDF</strong> (text-based).
+          </p>
+          <button type="submit" id="analyze-btn">Analyze spending</button>
+        </form>
+        <p id="status" class="status"></p>
+      </section>
+
+      <section class="grid">
+        <section class="card" id="summary-card">
+          <h2>2. Summary</h2>
+          <div id="summary-content" class="empty-state">
+            Upload a statement to see your totals.
+          </div>
+        </section>
+
+        <section class="card" id="categories-card">
+          <h2>3. Spending by category</h2>
+          <div id="categories-content" class="empty-state">
+            Categories will appear here.
+          </div>
+        </section>
+      </section>
+
+      <section class="grid">
+        <section class="card" id="suggestions-card">
+          <h2>4. Optimization ideas</h2>
+          <div id="suggestions-content" class="empty-state">
+            Once we analyze your spending, we'll suggest where you could save.
+          </div>
+        </section>
+
+        <section class="card" id="preview-card">
+          <h2>5. Transaction preview</h2>
+          <div id="preview-content" class="table-wrapper empty-state">
+            A few example transactions will show up here.
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <small>
+        This tool is for informational purposes only and does not constitute financial advice.
+      </small>
+    </footer>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

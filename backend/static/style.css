@@ -1,0 +1,250 @@
+/* static/style.css */
+
+:root {
+  --bg: #050816;
+  --card-bg: #111827;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --error: #f87171;
+  --success: #34d399;
+  --negative: #f97373;
+  --positive: #6ee7b7;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top, #111827, #020617 60%);
+  color: var(--text);
+}
+
+.header {
+  text-align: center;
+  padding: 2.5rem 1rem 1.5rem;
+}
+
+.header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  letter-spacing: 0.03em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  max-width: 640px;
+  margin-inline: auto;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto 3rem;
+  padding: 0 1rem 1rem;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  border: 1px solid var(--border);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.5);
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+input[type="file"] {
+  display: block;
+  width: 100%;
+  padding: 0.4rem;
+  border-radius: 0.5rem;
+  border: 1px dashed var(--border);
+  background-color: #020617;
+  color: var(--text);
+  cursor: pointer;
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  border: none;
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  background-color: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+input[type="file"]::file-selector-button:hover {
+  opacity: 0.9;
+}
+
+button {
+  margin-top: 0.9rem;
+  padding: 0.6rem 1.3rem;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(135deg, var(--accent), #6366f1);
+  color: white;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  transition: transform 0.09s ease, box-shadow 0.09s ease, opacity 0.09s ease;
+  box-shadow: 0 12px 30px rgba(79, 70, 229, 0.5);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 40px rgba(79, 70, 229, 0.6);
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+
+.status {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.status--loading {
+  color: var(--muted);
+}
+
+.status--error {
+  color: var(--error);
+}
+
+.status--success {
+  color: var(--success);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.summary-item {
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background-color: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border);
+}
+
+.summary-item--span {
+  grid-column: 1/-1;
+}
+
+.summary-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.summary-value {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.summary-value.positive {
+  color: var(--positive);
+}
+
+.summary-value.negative {
+  color: var(--negative);
+}
+
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 0.5rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+th,
+td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+th {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+tr:nth-child(even) td {
+  background-color: rgba(15, 23, 42, 0.7);
+}
+
+.empty-state {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.suggestions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+}
+
+.suggestion-item {
+  padding: 0.7rem;
+  border-radius: 0.75rem;
+  background-color: var(--accent-soft);
+  border: 1px solid rgba(79, 70, 229, 0.5);
+  font-size: 0.88rem;
+  margin-bottom: 0.5rem;
+}
+
+.footer {
+  text-align: center;
+  padding: 1.5rem 1rem 2rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
