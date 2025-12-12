@@ -16,7 +16,12 @@ class UnsupportedFileTypeError(Exception):
     pass
 
 
-def load_statement_from_upload(filename: str, file_bytes: bytes) -> pd.DataFrame:
+def load_statement_from_upload(
+    filename: str,
+    file_bytes: bytes,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Main entry point – used by the upload route.
 
@@ -36,8 +41,8 @@ def load_statement_from_upload(filename: str, file_bytes: bytes) -> pd.DataFrame
     buffer = io.BytesIO(file_bytes)
 
     if ext == ".pdf":
-        # Use custom PDF parser for BoA-style statements.
-        df = _load_bofa_pdf(buffer)
+        # Use custom PDF parser for BoA-style statements, with optional page range.
+        df = _load_bofa_pdf(buffer, page_start=page_start, page_end=page_end)
     elif ext == ".csv":
         df = pd.read_csv(buffer)
         df = _standardize_column_names(df)
@@ -47,7 +52,6 @@ def load_statement_from_upload(filename: str, file_bytes: bytes) -> pd.DataFrame
         df = _standardize_column_names(df)
         df = _clean_transaction_df(df)
     else:
-        # Should not reach here due to SUPPORTED_EXTENSIONS check.
         raise UnsupportedFileTypeError(f"Unsupported file type: {ext}")
 
     if df is None or df.empty:
@@ -56,39 +60,56 @@ def load_statement_from_upload(filename: str, file_bytes: bytes) -> pd.DataFrame
     return df
 
 
-# ---------- PDF (BoA-style) parsing ----------
+# ---------- PDF (BoA-style) parsing with page range ----------
 
-def _load_bofa_pdf(buffer: IO[bytes]) -> pd.DataFrame:
+def _load_bofa_pdf(
+    buffer: IO[bytes],
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
+) -> pd.DataFrame:
     """
-    Extract transactions from a Bank of America-style credit card statement PDF.
+    Extract transactions from a Bank of America–style credit card statement PDF.
 
     Strategy:
+      - Optionally restrict to pages [page_start, page_end] (1-based).
       - Find pages containing "Transactions".
       - Within those pages, look for lines starting with:
-            MM/DD<space>MM/DD<space>...
+            MM/DD  MM/DD  ...
         which are "Transaction Date" and "Posting Date".
-      - Split the remainder of the line into:
-            description, (optional ref#), (optional acct#), amount
+      - Split the rest into description, (optional ref#), (optional acct#), amount.
 
     Returns a DataFrame with at least:
         date (transaction date)
         description
         amount
 
-    and extra columns:
+    plus extras:
         posting_date, reference_number, account_number, section
     """
     records = []
 
     with pdfplumber.open(buffer) as pdf:
+        n_pages = len(pdf.pages)
+        if n_pages == 0:
+            raise ValueError("PDF has no pages.")
+
+        # Determine page indices to scan (0-based)
+        start_idx = 0 if page_start is None else max(page_start - 1, 0)
+        end_idx = n_pages - 1 if page_end is None else min(page_end - 1, n_pages - 1)
+        if start_idx > end_idx:
+            start_idx, end_idx = 0, n_pages - 1
+
+        page_indices = range(start_idx, end_idx + 1)
+
         # Try to infer the statement year from header like:
         # "November 6 - December 5, 2025"
-        statement_year = _infer_statement_year(pdf)
+        statement_year = _infer_statement_year(pdf, page_indices)
         if statement_year is None:
-            # Fallback: pick a recent year; you can tweak if needed
+            # Fallback: pick a recent year; adjust if needed
             statement_year = 2025
 
-        for page in pdf.pages:
+        for idx in page_indices:
+            page = pdf.pages[idx]
             text = page.extract_text() or ""
             if "Transactions" not in text:
                 continue
@@ -180,7 +201,7 @@ def _load_bofa_pdf(buffer: IO[bytes]) -> pd.DataFrame:
                 )
 
     if not records:
-        raise ValueError("No transaction lines found in PDF.")
+        raise ValueError("No transaction lines found in PDF. Adjust page range or check format.")
 
     df = pd.DataFrame(records)
 
@@ -195,15 +216,13 @@ def _load_bofa_pdf(buffer: IO[bytes]) -> pd.DataFrame:
     # Parse amount
     df["amount"] = df["amount_raw"].apply(_parse_amount)
 
-    # Keep only rows with valid amount (and date if available)
+    # Keep only rows with valid amount and date
     df = df[df["amount"].notna()]
-    if "date" in df.columns:
-        df = df[df["date"].notna()]
+    df = df[df["date"].notna()]
 
     # Ensure description exists
     df["description"] = df["description"].fillna("").astype(str).str.strip()
 
-    # Select core + useful extra columns
     cols = ["date", "description", "amount"]
     extra_cols = ["posting_date", "reference_number", "account_number", "section"]
     for c in extra_cols:
@@ -214,15 +233,17 @@ def _load_bofa_pdf(buffer: IO[bytes]) -> pd.DataFrame:
     return df
 
 
-def _infer_statement_year(pdf) -> Optional[int]:
+def _infer_statement_year(pdf, page_indices) -> Optional[int]:
     """
     Try to extract the year from a header line like:
         'November 6 - December 5, 2025'
+    on the specified page indices.
     """
     header_pattern = re.compile(
         r"[A-Za-z]+\s+\d{1,2}\s*-\s*[A-Za-z]+\s+\d{1,2},\s*(\d{4})"
     )
-    for page in pdf.pages:
+    for idx in page_indices:
+        page = pdf.pages[idx]
         text = page.extract_text() or ""
         m = header_pattern.search(text)
         if m:
@@ -252,9 +273,9 @@ def _parse_amount(s: str) -> Optional[float]:
 
 def _standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Standardize column names for CSV/Excel/PDF to match what we expect.
+    Standardize column names for CSV/Excel to match what we expect.
 
-    Canonical names we use everywhere else:
+    Canonical names we use:
         - date
         - posting_date
         - description
@@ -310,14 +331,11 @@ def _standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
         elif "balance" in col_lower:
             col_map[col] = "balance"
 
-    # Apply renaming
     df = df.rename(columns=col_map)
 
-    # Safety net: drop duplicate columns, keep first occurrence
+    # Drop duplicate columns, keeping first occurrence
     df = df.loc[:, ~df.columns.duplicated()]
-
     return df
-
 
 
 def _clean_transaction_df(df: pd.DataFrame) -> pd.DataFrame:

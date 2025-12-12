@@ -248,3 +248,77 @@ tr:nth-child(even) td {
   font-size: 0.8rem;
   color: var(--muted);
 }
+
+/* Tabs */
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.tab-button {
+  padding: 0.4rem 0.9rem;
+  background: transparent;
+  border-radius: 999px 999px 0 0;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tab-button--active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: radial-gradient(circle at top, rgba(79, 70, 229, 0.25), transparent);
+}
+
+.tab-panel {
+  display: none;
+  margin-top: 0.75rem;
+}
+
+.tab-panel--active {
+  display: block;
+}
+
+/* Extra layout tweaks */
+
+.page-range {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .page-range {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.page-range input[type="number"] {
+  width: 100%;
+  padding: 0.4rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background-color: #020617;
+  color: var(--text);
+}
+
+.card-header-flex {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.card-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}

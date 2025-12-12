@@ -1,4 +1,3 @@
-<!-- static/index.html -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -16,6 +15,7 @@
     </header>
 
     <main class="container">
+      <!-- Upload card -->
       <section class="card">
         <h2>1. Upload your statement</h2>
         <form id="upload-form">
@@ -29,41 +29,127 @@
           />
           <p class="hint">
             Supported formats: <strong>CSV</strong>, <strong>Excel</strong> (.xlsx/.xls), and
-            <strong>PDF</strong> (text-based).
+            <strong>PDF</strong> (text-based). For PDFs, you may optionally specify
+            the page range where transactions appear.
           </p>
+
+          <div class="page-range">
+            <div>
+              <label for="page-start">Transactions start page (optional)</label>
+              <input
+                type="number"
+                id="page-start"
+                name="page_start"
+                min="1"
+                placeholder="e.g. 3"
+              />
+            </div>
+            <div>
+              <label for="page-end">Transactions end page (optional)</label>
+              <input
+                type="number"
+                id="page-end"
+                name="page_end"
+                min="1"
+                placeholder="e.g. 4"
+              />
+            </div>
+          </div>
+
           <button type="submit" id="analyze-btn">Analyze spending</button>
         </form>
         <p id="status" class="status"></p>
       </section>
 
-      <section class="grid">
-        <section class="card" id="summary-card">
-          <h2>2. Summary</h2>
-          <div id="summary-content" class="empty-state">
-            Upload a statement to see your totals.
-          </div>
+      <!-- Tabs -->
+      <nav class="tabs">
+        <button class="tab-button tab-button--active" data-tab="overview">
+          Overview
+        </button>
+        <button class="tab-button" data-tab="transactions">
+          All transactions
+        </button>
+        <button class="tab-button" data-tab="categories">
+          Spending by category
+        </button>
+        <button class="tab-button" data-tab="optimization">
+          Optimization
+        </button>
+      </nav>
+
+      <!-- Overview tab (same layout as before) -->
+      <section class="tab-panel tab-panel--active" data-tab="overview">
+        <section class="grid">
+          <section class="card" id="summary-card">
+            <h2>2. Summary</h2>
+            <div id="summary-content" class="empty-state">
+              Upload a statement to see your totals.
+            </div>
+          </section>
+
+          <section class="card" id="categories-card">
+            <h2>3. Spending by category</h2>
+            <div id="categories-content" class="empty-state">
+              Categories will appear here.
+            </div>
+          </section>
         </section>
 
-        <section class="card" id="categories-card">
-          <h2>3. Spending by category</h2>
-          <div id="categories-content" class="empty-state">
-            Categories will appear here.
+        <section class="grid">
+          <section class="card" id="suggestions-card">
+            <h2>4. Optimization ideas</h2>
+            <div id="suggestions-content" class="empty-state">
+              Once we analyze your spending, we'll suggest where you could save.
+            </div>
+          </section>
+
+          <section class="card" id="preview-card">
+            <h2>5. Transaction preview</h2>
+            <div id="preview-content" class="table-wrapper empty-state">
+              A few example transactions will show up here.
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <!-- All transactions tab -->
+      <section class="tab-panel" data-tab="transactions">
+        <section class="card">
+          <div class="card-header-flex">
+            <h2>All transactions (editable)</h2>
+            <div class="card-actions">
+              <button type="button" id="add-transaction-btn">Add transaction</button>
+              <button type="button" id="reanalyze-btn">Update analysis</button>
+            </div>
+          </div>
+          <p class="hint">
+            You can edit the <strong>Date</strong>, <strong>Description</strong>, and
+            <strong>Amount</strong> cells directly. Then click
+            <strong>Update analysis</strong> to recompute all numbers.
+          </p>
+          <div id="transactions-table-wrapper" class="table-wrapper empty-state">
+            No transactions loaded yet.
           </div>
         </section>
       </section>
 
-      <section class="grid">
-        <section class="card" id="suggestions-card">
-          <h2>4. Optimization ideas</h2>
-          <div id="suggestions-content" class="empty-state">
-            Once we analyze your spending, we'll suggest where you could save.
+      <!-- Categories tab -->
+      <section class="tab-panel" data-tab="categories">
+        <section class="card">
+          <h2>Spending by category (full view)</h2>
+          <div id="categories-full-content" class="empty-state">
+            Categories will appear here after you upload a statement.
           </div>
         </section>
+      </section>
 
-        <section class="card" id="preview-card">
-          <h2>5. Transaction preview</h2>
-          <div id="preview-content" class="table-wrapper empty-state">
-            A few example transactions will show up here.
+      <!-- Optimization tab -->
+      <section class="tab-panel" data-tab="optimization">
+        <section class="card">
+          <h2>Optimization ideas</h2>
+          <div id="suggestions-full-content" class="empty-state">
+            Upload a statement and/or adjust your transactions, then recompute analysis
+            to see tailored suggestions here.
           </div>
         </section>
       </section>

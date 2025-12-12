@@ -1,13 +1,51 @@
 // static/app.js
+
+// --- DOM references ---
 const form = document.getElementById("upload-form");
 const statusEl = document.getElementById("status");
 const analyzeBtn = document.getElementById("analyze-btn");
 
 const summaryEl = document.getElementById("summary-content");
-const categoriesEl = document.getElementById("categories-content");
-const suggestionsEl = document.getElementById("suggestions-content");
+const categoriesOverviewEl = document.getElementById("categories-content");
+const suggestionsOverviewEl = document.getElementById("suggestions-content");
 const previewEl = document.getElementById("preview-content");
 
+const categoriesFullEl = document.getElementById("categories-full-content");
+const suggestionsFullEl = document.getElementById("suggestions-full-content");
+const transactionsTableWrapper = document.getElementById("transactions-table-wrapper");
+const addTransactionBtn = document.getElementById("add-transaction-btn");
+const reanalyzeBtn = document.getElementById("reanalyze-btn");
+
+const pageStartInput = document.getElementById("page-start");
+const pageEndInput = document.getElementById("page-end");
+
+// Tabs
+const tabButtons = document.querySelectorAll(".tab-button");
+const tabPanels = document.querySelectorAll(".tab-panel");
+
+// --- State ---
+let currentTransactions = []; // full list of transactions from backend
+let currentSummary = null;
+
+// --- Tab switching ---
+tabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const tab = btn.dataset.tab;
+
+    tabButtons.forEach((b) => {
+      b.classList.toggle("tab-button--active", b === btn);
+    });
+
+    tabPanels.forEach((panel) => {
+      panel.classList.toggle(
+        "tab-panel--active",
+        panel.dataset.tab === tab
+      );
+    });
+  });
+});
+
+// --- Upload & analyze ---
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -20,6 +58,11 @@ form.addEventListener("submit", async (event) => {
   const file = fileInput.files[0];
   const formData = new FormData();
   formData.append("statement", file);
+
+  const pageStart = pageStartInput.value.trim();
+  const pageEnd = pageEndInput.value.trim();
+  if (pageStart) formData.append("page_start", pageStart);
+  if (pageEnd) formData.append("page_end", pageEnd);
 
   setStatus("Analyzing your statement...", "loading");
   setLoading(true);
@@ -39,7 +82,7 @@ form.addEventListener("submit", async (event) => {
     }
 
     const data = await response.json();
-    renderResults(data);
+    handleAnalysisResult(data);
     setStatus("Analysis complete ✅", "success");
   } catch (err) {
     console.error(err);
@@ -50,6 +93,68 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+// --- Reanalyze after manual edits ---
+reanalyzeBtn.addEventListener("click", async () => {
+  if (!currentTransactions || currentTransactions.length === 0) {
+    setStatus("No transactions to re-analyze. Upload a file first.", "error");
+    return;
+  }
+
+  const updated = collectTransactionsFromTable();
+  if (updated.length === 0) {
+    setStatus("No valid transactions in table to re-analyze.", "error");
+    return;
+  }
+
+  setStatus("Updating analysis based on your edits...", "loading");
+  setLoading(true);
+
+  try {
+    const response = await fetch("/api/reanalyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transactions: updated }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const msg =
+        errorData.detail ||
+        `Re-analysis failed (status ${response.status}).`;
+      throw new Error(msg);
+    }
+
+    const data = await response.json();
+    handleAnalysisResult(data);
+    setStatus("Analysis updated ✅", "success");
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || "Unexpected error during re-analysis.", "error");
+  } finally {
+    setLoading(false);
+  }
+});
+
+// --- Add new transaction row ---
+addTransactionBtn.addEventListener("click", () => {
+  if (!currentTransactions) {
+    currentTransactions = [];
+  }
+  const today = new Date().toISOString().slice(0, 10);
+
+  currentTransactions.push({
+    date: today,
+    description: "",
+    amount: 0.0,
+    category: "Uncategorized",
+    direction: "unknown",
+  });
+
+  renderTransactionsTable(currentTransactions);
+});
+
+// --- Helpers ---
+
 function setStatus(message, type) {
   statusEl.textContent = message;
   statusEl.className = `status status--${type}`;
@@ -57,29 +162,50 @@ function setStatus(message, type) {
 
 function setLoading(isLoading) {
   analyzeBtn.disabled = isLoading;
+  reanalyzeBtn.disabled = isLoading;
+  addTransactionBtn.disabled = isLoading;
+
   analyzeBtn.textContent = isLoading ? "Analyzing..." : "Analyze spending";
 }
 
 function clearResults() {
   summaryEl.innerHTML = "Upload a statement to see your totals.";
-  categoriesEl.innerHTML = "Categories will appear here.";
-  suggestionsEl.innerHTML = "Once we analyze your spending, we'll suggest where you could save.";
+  categoriesOverviewEl.innerHTML = "Categories will appear here.";
+  suggestionsOverviewEl.innerHTML =
+    "Once we analyze your spending, we'll suggest where you could save.";
   previewEl.innerHTML = "A few example transactions will show up here.";
 
+  categoriesFullEl.innerHTML =
+    "Categories will appear here after you upload a statement.";
+  suggestionsFullEl.innerHTML =
+    "Upload a statement and/or adjust your transactions, then recompute analysis to see suggestions here.";
+
+  transactionsTableWrapper.innerHTML = "No transactions loaded yet.";
+
   summaryEl.classList.add("empty-state");
-  categoriesEl.classList.add("empty-state");
-  suggestionsEl.classList.add("empty-state");
+  categoriesOverviewEl.classList.add("empty-state");
+  suggestionsOverviewEl.classList.add("empty-state");
   previewEl.classList.add("empty-state");
+  categoriesFullEl.classList.add("empty-state");
+  suggestionsFullEl.classList.add("empty-state");
+  transactionsTableWrapper.classList.add("empty-state");
 }
 
-function renderResults(data) {
-  const { summary, preview } = data;
+function handleAnalysisResult(data) {
+  const { summary, preview, transactions } = data;
+  currentSummary = summary;
+  currentTransactions = transactions || [];
 
   renderSummary(summary.overall);
-  renderCategories(summary.by_category);
-  renderSuggestions(summary.suggestions);
+  renderCategoriesOverview(summary.by_category);
+  renderCategoriesFull(summary.by_category);
+  renderSuggestionsOverview(summary.suggestions);
+  renderSuggestionsFull(summary.suggestions);
   renderPreview(preview);
+  renderTransactionsTable(currentTransactions);
 }
+
+// --- Rendering functions ---
 
 function renderSummary(overall) {
   if (!overall) {
@@ -91,7 +217,7 @@ function renderSummary(overall) {
   summaryEl.classList.remove("empty-state");
 
   const inflow = overall.total_inflow ?? 0;
-  const outflow = overall.total_outflow ?? 0; // negative
+  const outflow = overall.total_outflow ?? 0;
   const net = overall.net ?? 0;
 
   const period =
@@ -127,21 +253,28 @@ function renderSummary(overall) {
   `;
 }
 
-function renderCategories(byCategory) {
+function renderCategoriesOverview(byCategory) {
+  renderCategoriesIntoElement(byCategory, categoriesOverviewEl);
+}
+
+function renderCategoriesFull(byCategory) {
+  renderCategoriesIntoElement(byCategory, categoriesFullEl);
+}
+
+function renderCategoriesIntoElement(byCategory, targetEl) {
   if (!byCategory || byCategory.length === 0) {
-    categoriesEl.innerHTML = "No expense categories found.";
-    categoriesEl.classList.add("empty-state");
+    targetEl.innerHTML = "No expense categories found.";
+    targetEl.classList.add("empty-state");
     return;
   }
 
-  categoriesEl.classList.remove("empty-state");
+  targetEl.classList.remove("empty-state");
 
   const rows = byCategory
     .map((cat) => {
       const total = cat.total ?? 0;
       const share = (cat.share ?? 0) * 100;
       const count = cat.count ?? 0;
-
       return `
         <tr>
           <td>${cat.category}</td>
@@ -153,7 +286,7 @@ function renderCategories(byCategory) {
     })
     .join("");
 
-  categoriesEl.innerHTML = `
+  targetEl.innerHTML = `
     <div class="table-wrapper">
       <table>
         <thead>
@@ -172,15 +305,23 @@ function renderCategories(byCategory) {
   `;
 }
 
-function renderSuggestions(suggestions) {
+function renderSuggestionsOverview(suggestions) {
+  renderSuggestionsIntoElement(suggestions, suggestionsOverviewEl);
+}
+
+function renderSuggestionsFull(suggestions) {
+  renderSuggestionsIntoElement(suggestions, suggestionsFullEl);
+}
+
+function renderSuggestionsIntoElement(suggestions, targetEl) {
   if (!suggestions || suggestions.length === 0) {
-    suggestionsEl.innerHTML =
-      "We couldn't generate specific savings ideas from this file. Try a longer period.";
-    suggestionsEl.classList.add("empty-state");
+    targetEl.innerHTML =
+      "We couldn't generate specific savings ideas from this file. Try a longer period or adjust your transactions.";
+    targetEl.classList.add("empty-state");
     return;
   }
 
-  suggestionsEl.classList.remove("empty-state");
+  targetEl.classList.remove("empty-state");
 
   const items = suggestions
     .map(
@@ -193,7 +334,7 @@ function renderSuggestions(suggestions) {
     )
     .join("");
 
-  suggestionsEl.innerHTML = `
+  targetEl.innerHTML = `
     <ul class="suggestions-list">
       ${items}
     </ul>
@@ -209,7 +350,6 @@ function renderPreview(preview) {
 
   previewEl.classList.remove("empty-state");
 
-  // Decide which columns to show
   const columns = ["date", "description", "amount", "category", "direction"].filter((col) =>
     preview.some((row) => col in row)
   );
@@ -242,4 +382,99 @@ function renderPreview(preview) {
       </table>
     </div>
   `;
+}
+
+function renderTransactionsTable(transactions) {
+  if (!transactions || transactions.length === 0) {
+    transactionsTableWrapper.innerHTML = "No transactions loaded yet.";
+    transactionsTableWrapper.classList.add("empty-state");
+    return;
+  }
+
+  transactionsTableWrapper.classList.remove("empty-state");
+
+  const rows = transactions
+    .map((tx, idx) => {
+      const date = tx.date ? String(tx.date).slice(0, 10) : "";
+      const desc = tx.description ?? "";
+      const amount =
+        typeof tx.amount === "number" ? tx.amount.toFixed(2) : tx.amount ?? "";
+      const category = tx.category ?? "Uncategorized";
+      const direction = tx.direction ?? "unknown";
+
+      return `
+        <tr data-index="${idx}">
+          <td data-field="date" contenteditable="true">${date}</td>
+          <td data-field="description" contenteditable="true">${escapeHtml(desc)}</td>
+          <td data-field="amount" contenteditable="true">${amount}</td>
+          <td>${category}</td>
+          <td>${direction}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  transactionsTableWrapper.innerHTML = `
+    <div class="table-wrapper">
+      <table id="transactions-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Amount</th>
+            <th>Category (auto)</th>
+            <th>Direction (auto)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function collectTransactionsFromTable() {
+  const table = document.getElementById("transactions-table");
+  if (!table) return [];
+
+  const rows = Array.from(table.querySelectorAll("tbody tr"));
+  const result = [];
+
+  rows.forEach((row) => {
+    const dateCell = row.querySelector('td[data-field="date"]');
+    const descCell = row.querySelector('td[data-field="description"]');
+    const amountCell = row.querySelector('td[data-field="amount"]');
+
+    const date = (dateCell?.textContent || "").trim();
+    const description = (descCell?.textContent || "").trim();
+    const amountStr = (amountCell?.textContent || "").trim();
+    const parsedAmount = parseAmount(amountStr);
+
+    if (!date && (amountStr === "" || isNaN(parsedAmount))) {
+      // Completely empty row – skip
+      return;
+    }
+
+    result.push({
+      date,
+      description,
+      amount: isNaN(parsedAmount) ? null : parsedAmount,
+    });
+  });
+
+  return result;
+}
+
+function parseAmount(text) {
+  if (!text) return NaN;
+  const cleaned = text.replace(/[^0-9.\-]/g, "");
+  return parseFloat(cleaned);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
