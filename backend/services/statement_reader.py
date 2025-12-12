@@ -8,6 +8,10 @@ import re
 import pandas as pd
 import pdfplumber
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf"}
 
 
@@ -25,10 +29,16 @@ def load_statement_from_upload(
     """
     Main entry point – used by the upload route.
 
+    For PDFs, uses a *generic* transaction parser that should work with
+    most card / bank statements (including Chase and BoA) as long as:
+        - each transaction is on a single line
+        - the line starts with a date like '11/04'
+        - the line ends with an amount like '23.93' or '-1,066.82'
+
     Returns a pandas DataFrame with at least:
         - date (datetime64)
         - description (str)
-        - amount (float, signed: +inflow, -outflow)
+        - amount (float, signed exactly as in the statement)
     """
     ext = Path(filename).suffix.lower()
 
@@ -41,8 +51,7 @@ def load_statement_from_upload(
     buffer = io.BytesIO(file_bytes)
 
     if ext == ".pdf":
-        # Use custom PDF parser for BoA-style statements, with optional page range.
-        df = _load_bofa_pdf(buffer, page_start=page_start, page_end=page_end)
+        df = _load_pdf_transactions(buffer, page_start=page_start, page_end=page_end)
     elif ext == ".csv":
         df = pd.read_csv(buffer)
         df = _standardize_column_names(df)
@@ -60,192 +69,149 @@ def load_statement_from_upload(
     return df
 
 
-# ---------- PDF (BoA-style) parsing with page range ----------
+# ---------------------------------------------------------------------------
+# Generic PDF transaction parser
+# ---------------------------------------------------------------------------
 
-def _load_bofa_pdf(
+def _load_pdf_transactions(
     buffer: IO[bytes],
     page_start: Optional[int] = None,
     page_end: Optional[int] = None,
 ) -> pd.DataFrame:
     """
-    Extract transactions from a Bank of America–style credit card statement PDF.
+    Generic PDF transaction parser.
 
-    Strategy:
-      - Optionally restrict to pages [page_start, page_end] (1-based).
-      - Find pages containing "Transactions".
-      - Within those pages, look for lines starting with:
-            MM/DD  MM/DD  ...
-        which are "Transaction Date" and "Posting Date".
-      - Split the rest into description, (optional ref#), (optional acct#), amount.
+    Works for Chase (example statement you uploaded) and BoA type layouts
+    by looking for lines matching:
 
-    Returns a DataFrame with at least:
-        date (transaction date)
-        description
-        amount
+        MM/DD  <description>  <amount>
 
-    plus extras:
-        posting_date, reference_number, account_number, section
+    Examples of lines this will pick up (from your Chase PDF :contentReference[oaicite:1]{index=1}):
+
+        11/04 Payment Thank You-Mobile -594.12
+        10/28 UBER *TRIP HELP.UBER.COM CA 23.93
+        11/14 OPENAI *CHATGPT SUBSCR OPENAI.COM CA 21.78
+        11/25 JUBILEE MARKET PLACE NEW YORK NY 34.69
+
+    And BoA-style:
+
+        11/10 11/11 BH* BETTERHELP BETTERHELP.CO CA 65.00
+
+    (the second date is treated as part of the description).
     """
-    records = []
+    records: list[dict] = []
 
     with pdfplumber.open(buffer) as pdf:
         n_pages = len(pdf.pages)
         if n_pages == 0:
             raise ValueError("PDF has no pages.")
 
-        # Determine page indices to scan (0-based)
+        # Determine which pages to scan (0-based indices)
         start_idx = 0 if page_start is None else max(page_start - 1, 0)
         end_idx = n_pages - 1 if page_end is None else min(page_end - 1, n_pages - 1)
         if start_idx > end_idx:
             start_idx, end_idx = 0, n_pages - 1
-
         page_indices = range(start_idx, end_idx + 1)
 
-        # Try to infer the statement year from header like:
-        # "November 6 - December 5, 2025"
+        # Try to infer statement year from any 4-digit year on those pages
         statement_year = _infer_statement_year(pdf, page_indices)
         if statement_year is None:
-            # Fallback: pick a recent year; adjust if needed
+            # Safe fallback; you can tweak if needed
             statement_year = 2025
+
+        # Regex for a generic transaction row:
+        #   MM/DD  ...  AMOUNT
+        # where AMOUNT can be 23.93, -1,066.82, (123.45), $65.00, etc.
+        tx_pattern = re.compile(
+            r"^(\d{1,2}/\d{1,2})\s+(.+?)\s+(-?\(?\$?\d[\d,]*\.\d{2}\)?)$"
+        )
+
+        current_section: Optional[str] = None
 
         for idx in page_indices:
             page = pdf.pages[idx]
             text = page.extract_text() or ""
-            if "Transactions" not in text:
-                continue
-
-            lines = [ln.strip() for ln in text.splitlines()]
-            in_transactions = False
-            current_section = None
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
             for line in lines:
-                if not line:
+                # Optional: track sections if present
+                if line.upper().startswith("PAYMENTS AND OTHER CREDITS"):
+                    current_section = "Payments and Other Credits"
+                    continue
+                if line.upper().startswith("PURCHASE") and "ACCOUNT ACTIVITY" not in line.upper():
+                    current_section = "Purchases"
+                    continue
+                if line.upper().startswith("FEES"):
+                    current_section = "Fees"
+                    continue
+                if line.upper().startswith("INTEREST CHARGES"):
+                    current_section = "Interest"
                     continue
 
-                # Start of block
-                if line == "Transactions":
-                    in_transactions = True
-                    continue
-
-                if not in_transactions:
-                    continue
-
-                # End at page footer
-                if line.startswith("Page ") and " of " in line:
-                    break
-
-                # Skip column headers
-                if line.startswith("Transaction Posting Reference Account"):
-                    continue
-                if line.startswith("Date Date Description"):
-                    continue
-
-                # Section headers within Transactions
-                if line in (
-                    "Payments and Other Credits",
-                    "Purchases and Adjustments",
-                    "Interest Charged",
-                ):
-                    current_section = line
-                    continue
-
-                # Skip TOTAL lines (summary, not single transactions)
-                if line.startswith("TOTAL "):
-                    continue
-
-                # Match "MM/DD  MM/DD  <rest>"
-                m = re.match(r"^(\d{2}/\d{2})\s+(\d{2}/\d{2})\s+(.+)$", line)
+                # Try to match transaction pattern
+                m = tx_pattern.match(line)
                 if not m:
                     continue
 
-                tran_mmdd, post_mmdd, rest = m.groups()
-                tokens = rest.split()
-                if not tokens:
-                    continue
+                mmdd, desc, amount_str = m.groups()
 
-                amount_token = tokens[-1]
-
-                # Heuristic for ref & acct numbers:
-                # ... <reference_number> <account_number> <amount>
-                cleaned_amount = amount_token.replace(",", "").replace("$", "").strip()
-                ref = None
-                acct = None
-
-                if (
-                    len(tokens) >= 3
-                    and cleaned_amount.replace(".", "").replace("-", "").isdigit()
-                    and tokens[-2].isdigit()
-                    and tokens[-3].isdigit()
-                ):
-                    ref = tokens[-2]
-                    acct = tokens[-3]
-                    desc_tokens = tokens[:-3]
-                else:
-                    desc_tokens = tokens[:-1]
-
-                description = " ".join(desc_tokens).strip()
-
-                tran_date_str = f"{tran_mmdd}/{statement_year}"
-                post_date_str = f"{post_mmdd}/{statement_year}"
+                # Build full date string using inferred year
+                tran_date_str = f"{mmdd}/{statement_year}"
 
                 records.append(
                     {
                         "transaction_date_str": tran_date_str,
-                        "posting_date_str": post_date_str,
-                        "description": description,
-                        "reference_number": ref,
-                        "account_number": acct,
-                        "amount_raw": amount_token,
+                        "description": desc.strip(),
+                        "amount_raw": amount_str.strip(),
                         "section": current_section,
                     }
                 )
 
     if not records:
-        raise ValueError("No transaction lines found in PDF. Adjust page range or check format.")
+        raise ValueError(
+            "No transaction-like lines found in PDF. "
+            "If this is a very unusual statement layout, try entering a CSV/Excel export instead."
+        )
 
     df = pd.DataFrame(records)
 
-    # Convert dates
+    # Convert date
     df["date"] = pd.to_datetime(
         df["transaction_date_str"], format="%m/%d/%Y", errors="coerce"
-    )
-    df["posting_date"] = pd.to_datetime(
-        df["posting_date_str"], format="%m/%d/%Y", errors="coerce"
     )
 
     # Parse amount
     df["amount"] = df["amount_raw"].apply(_parse_amount)
 
-    # Keep only rows with valid amount and date
+    # Clean up
+    df["description"] = df["description"].fillna("").astype(str).str.strip()
     df = df[df["amount"].notna()]
     df = df[df["date"].notna()]
 
-    # Ensure description exists
-    df["description"] = df["description"].fillna("").astype(str).str.strip()
-
+    # Final column order
     cols = ["date", "description", "amount"]
-    extra_cols = ["posting_date", "reference_number", "account_number", "section"]
-    for c in extra_cols:
-        if c in df.columns:
-            cols.append(c)
+    if "section" in df.columns:
+        cols.append("section")
 
-    df = df[cols].reset_index(drop=True)
-    return df
+    return df[cols].reset_index(drop=True)
 
 
-def _infer_statement_year(pdf, page_indices) -> Optional[int]:
+def _infer_statement_year(pdf: pdfplumber.PDF, page_indices) -> Optional[int]:
     """
-    Try to extract the year from a header line like:
-        'November 6 - December 5, 2025'
-    on the specified page indices.
+    Generic year detector.
+
+    We just look for any four-digit year like 2025 on the selected pages.
+    This works for:
+      - "December 2025" calendar on page 1 of your Chase PDF
+      - "Opening/Closing Date 10/29/25 - 11/28/25" lines with "2025"
+      - BoA headers like "November 6 - December 5, 2025"
     """
-    header_pattern = re.compile(
-        r"[A-Za-z]+\s+\d{1,2}\s*-\s*[A-Za-z]+\s+\d{1,2},\s*(\d{4})"
-    )
+    year_pattern = re.compile(r"\b(20\d{2})\b")
+
     for idx in page_indices:
         page = pdf.pages[idx]
         text = page.extract_text() or ""
-        m = header_pattern.search(text)
+        m = year_pattern.search(text)
         if m:
             try:
                 return int(m.group(1))
@@ -269,7 +235,9 @@ def _parse_amount(s: str) -> Optional[float]:
     return pd.to_numeric(s, errors="coerce")
 
 
-# ---------- Generic CSV/Excel cleaning ----------
+# ---------------------------------------------------------------------------
+# Generic CSV/Excel cleaning (unchanged from v2)
+# ---------------------------------------------------------------------------
 
 def _standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """
