@@ -9,9 +9,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import classification_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = PROJECT_ROOT / "backend" / "data"
 MODEL_DIR = PROJECT_ROOT / "backend" / "models"
 MODEL_PATH = MODEL_DIR / "category_model.joblib"
 
@@ -26,6 +28,7 @@ def load_training_data() -> pd.DataFrame:
     You can have multiple CSVs; they will be concatenated.
     """
     training_dir = DATA_DIR / "training"
+    print(training_dir)
     csv_files = list(training_dir.glob("*.csv"))
     if not csv_files:
         raise FileNotFoundError(
@@ -53,18 +56,27 @@ def load_training_data() -> pd.DataFrame:
 def build_pipeline() -> Pipeline:
     """
     Text classification pipeline: TF-IDF + Linear SVM.
+    Tuned a bit for small-ish datasets.
     """
     pipeline = Pipeline(
         steps=[
             (
                 "tfidf",
                 TfidfVectorizer(
-                    ngram_range=(1, 2),   # unigrams + bigrams
-                    min_df=2,             # ignore super-rare tokens
-                    max_features=30000,   # cap vocab size
+                    ngram_range=(1, 2),    # unigrams + bigrams
+                    min_df=1,              # keep rare tokens; we have little data
+                    max_features=30000,
+                    sublinear_tf=True,     # log(1 + tf)
+                    strip_accents="unicode",
                 ),
             ),
-            ("clf", LinearSVC()),
+            (
+                "clf",
+                LinearSVC(
+                    C=1.0,
+                    class_weight="balanced",  # handle class imbalance better
+                ),
+            ),
         ]
     )
     return pipeline
@@ -77,15 +89,19 @@ def main() -> None:
     X = df["description"]
     y = df["category"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-
     pipeline = build_pipeline()
-    pipeline.fit(X_train, y_train)
 
-    acc = pipeline.score(X_test, y_test)
-    print(f"Test accuracy: {acc:.3f}")
+    # 5-fold cross-validation for a more stable accuracy estimate
+    scores = cross_val_score(pipeline, X, y, cv=5)
+    print(f"Cross-validated accuracy: mean={scores.mean():.3f}, std={scores.std():.3f}")
+
+    # Fit on full data after evaluating
+    pipeline.fit(X, y)
+
+    # Optional: see where it struggles (on full data)
+    y_pred = pipeline.predict(X)
+    print("\nClassification report (on full training set):")
+    print(classification_report(y, y_pred))
 
     joblib.dump(pipeline, MODEL_PATH)
     print(f"Saved model to {MODEL_PATH}")

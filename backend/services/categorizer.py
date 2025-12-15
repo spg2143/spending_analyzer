@@ -1,9 +1,40 @@
 from __future__ import annotations
 
-import pandas as pd
+from pathlib import Path
 from typing import Dict, Any, List
 
+import joblib
+import pandas as pd
+
 from .optimizer import build_suggestions
+
+# ---------------------------------------------------------------------------
+# Optional ML model (TF-IDF + Linear SVM)
+# ---------------------------------------------------------------------------
+
+MODEL = None
+
+
+def _load_model_if_exists() -> None:
+    """Load ML model from backend/models/category_model.joblib if present."""
+    global MODEL
+    model_path = Path(__file__).resolve().parents[1] / "models" / "category_model.joblib"
+    if model_path.exists():
+        try:
+            MODEL = joblib.load(model_path)
+            print(f"[categorizer] Loaded ML category model from {model_path}")
+        except Exception as e:
+            MODEL = None
+            print(f"[categorizer] Failed to load ML model: {e}")
+    else:
+        print("[categorizer] No ML model found, using rule-based categories only.")
+
+
+_load_model_if_exists()
+
+# ---------------------------------------------------------------------------
+# Rule-based fallback categories
+# ---------------------------------------------------------------------------
 
 EXPENSE_CATEGORY_KEYWORDS = {
     "Rent & Office": ["rent", "office", "cowork", "wework"],
@@ -116,12 +147,17 @@ INCOME_CATEGORY_KEYWORDS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Public functions
+# ---------------------------------------------------------------------------
+
 def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds:
-        - direction: "inflow", "outflow" or "zero"
-        - category: category string
+        - direction: "inflow", "outflow" or "zero" / "unknown"
+        - category: ML-based if model exists, otherwise rule-based
     """
+    # Direction from amount
     if "amount" not in df.columns:
         df["direction"] = "unknown"
         df["category"] = "Uncategorized"
@@ -136,31 +172,26 @@ def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
     df["description_filled"] = df["description"].fillna("").astype(str)
 
-    df["category"] = df.apply(
-        lambda row: _assign_category(row["description_filled"], row["direction"]), axis=1
-    )
+    # 1) Try ML model if loaded
+    if MODEL is not None:
+        try:
+            preds = MODEL.predict(df["description_filled"])
+            df["category"] = [str(p) for p in preds]
+        except Exception as e:
+            print(f"[categorizer] ML prediction failed, falling back to rules: {e}")
+            df["category"] = df.apply(
+                lambda row: _assign_category(row["description_filled"], row["direction"]),
+                axis=1,
+            )
+    else:
+        # 2) Pure rule-based
+        df["category"] = df.apply(
+            lambda row: _assign_category(row["description_filled"], row["direction"]),
+            axis=1,
+        )
 
     df = df.drop(columns=["description_filled"])
     return df
-
-
-def _assign_category(description: str, direction: str) -> str:
-    desc = description.lower()
-
-    if direction == "outflow":
-        for category, keywords in EXPENSE_CATEGORY_KEYWORDS.items():
-            if any(kw in desc for kw in keywords):
-                return category
-        return "Other Expense"
-
-    elif direction == "inflow":
-        for category, keywords in INCOME_CATEGORY_KEYWORDS.items():
-            if any(kw in desc for kw in keywords):
-                return category
-        return "Other Income"
-
-    else:
-        return "Uncategorized"
 
 
 def build_category_summary(df: pd.DataFrame) -> Dict[str, Any]:
@@ -198,7 +229,7 @@ def build_category_summary(df: pd.DataFrame) -> Dict[str, Any]:
 
             for _, row in grouped.sort_values("sum").iterrows():
                 category = row["category"]
-                total = float(-row["sum"])
+                total = float(-row["sum"])  # make positive
                 count = int(row["count"])
                 share = float(total / total_abs_outflow) if total_abs_outflow > 0 else 0.0
 
@@ -216,7 +247,11 @@ def build_category_summary(df: pd.DataFrame) -> Dict[str, Any]:
         df["year_month"] = df["date"].dt.to_period("M").astype(str)
         grouped_month = (
             df.groupby("year_month")["amount"]
-            .agg(total="sum", inflow=lambda s: s[s > 0].sum(), outflow=lambda s: s[s < 0].sum())
+            .agg(
+                total="sum",
+                inflow=lambda s: s[s > 0].sum(),
+                outflow=lambda s: s[s < 0].sum(),
+            )
             .reset_index()
         )
         for _, row in grouped_month.iterrows():
@@ -247,3 +282,26 @@ def build_category_summary(df: pd.DataFrame) -> Dict[str, Any]:
         "by_month": monthly_summary,
         "suggestions": suggestions,
     }
+
+
+# ---------------------------------------------------------------------------
+# Rule-based fallback helper
+# ---------------------------------------------------------------------------
+
+def _assign_category(description: str, direction: str) -> str:
+    desc = description.lower()
+
+    if direction == "outflow":
+        for category, keywords in EXPENSE_CATEGORY_KEYWORDS.items():
+            if any(kw in desc for kw in keywords):
+                return category
+        return "Other Expense"
+
+    elif direction == "inflow":
+        for category, keywords in INCOME_CATEGORY_KEYWORDS.items():
+            if any(kw in desc for kw in keywords):
+                return category
+        return "Other Income"
+
+    else:
+        return "Uncategorized"
