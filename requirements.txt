@@ -6,3 +6,5 @@ pdfplumber
 python-multipart
 scikit-learn
 joblib
+uvicorn
+gunicorn

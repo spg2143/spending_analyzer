@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
+import os
 import pandas as pd
 
 from backend.services.statement_reader import (
@@ -20,6 +21,9 @@ from backend.services.categorizer import (
     categorize_transactions,
     build_category_summary,
 )
+
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 app = FastAPI(
     title="Small Business Spend Analyzer",
@@ -79,6 +83,11 @@ async def analyze_statement(
     """
     try:
         file_bytes = await statement.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+        status_code=413,
+        detail=f"File too large. Max allowed is {MAX_UPLOAD_MB} MB."
+    )
         df = load_statement_from_upload(
             statement.filename,
             file_bytes,
