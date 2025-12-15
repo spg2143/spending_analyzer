@@ -2,21 +2,54 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title> Spending Analyzer</title>
+    <title>Spending Analyzer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
+
   <body>
-    <header class="header">
-      <h1>Spending Analyzer</h1>
-      <p class="subtitle">
-        Upload your bank statement (CSV, Excel, or PDF) to see where your money goes.
-      </p>
+    <!-- Top header (ChiEAC-style) -->
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="#">
+          <img class="brand-logo" src="/static/assets/logo.webp" alt="Logo" />
+          <div class="brand-text">
+            <div class="brand-name">Spending Analyzer</div>
+            <div class="brand-sub">Upload statements • Categorize • Optimize</div>
+          </div>
+        </a>
+
+        <nav class="site-nav">
+          <a href="#upload">Upload</a>
+          <a href="#overview">Overview</a>
+          <a href="#transactions">Transactions</a>
+          <a href="#categories">Categories</a>
+          <a href="#optimization">Optimization</a>
+        </nav>
+
+        <a class="nav-cta" href="#upload">Analyze</a>
+      </div>
     </header>
 
+    <!-- Hero section -->
+    <section class="hero">
+      <div class="hero-inner">
+        <h1>Understand your spending in minutes.</h1>
+        <p>
+          Upload a bank statement (CSV, Excel, or PDF), review and edit transactions,
+          then see spending by category and ideas to optimize.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#upload">Upload statement</a>
+          <a class="btn btn-ghost" href="#transactions">View transactions</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main app -->
     <main class="container">
       <!-- Upload card -->
-      <section class="card">
+      <section class="card" id="upload">
         <h2>1. Upload your statement</h2>
         <form id="upload-form">
           <label for="statement">Bank statement file</label>
@@ -62,7 +95,7 @@
       </section>
 
       <!-- Tabs -->
-      <nav class="tabs">
+      <nav class="tabs" aria-label="Analysis tabs">
         <button class="tab-button tab-button--active" data-tab="overview">
           Overview
         </button>
@@ -78,7 +111,11 @@
       </nav>
 
       <!-- Overview tab (same layout as before) -->
-      <section class="tab-panel tab-panel--active" data-tab="overview">
+      <section
+        class="tab-panel tab-panel--active"
+        data-tab="overview"
+        id="overview"
+      >
         <section class="grid">
           <section class="card" id="summary-card">
             <h2>2. Summary</h2>
@@ -113,7 +150,7 @@
       </section>
 
       <!-- All transactions tab -->
-      <section class="tab-panel" data-tab="transactions">
+      <section class="tab-panel" data-tab="transactions" id="transactions">
         <section class="card">
           <div class="card-header-flex">
             <h2>All transactions (editable)</h2>
@@ -134,7 +171,7 @@
       </section>
 
       <!-- Categories tab -->
-      <section class="tab-panel" data-tab="categories">
+      <section class="tab-panel" data-tab="categories" id="categories">
         <section class="card">
           <h2>Spending by category (full view)</h2>
           <div id="categories-full-content" class="empty-state">
@@ -144,7 +181,7 @@
       </section>
 
       <!-- Optimization tab -->
-      <section class="tab-panel" data-tab="optimization">
+      <section class="tab-panel" data-tab="optimization" id="optimization">
         <section class="card">
           <h2>Optimization ideas</h2>
           <div id="suggestions-full-content" class="empty-state">
@@ -155,10 +192,13 @@
       </section>
     </main>
 
-    <footer class="footer">
-      <small>
-        This tool is for informational purposes only and does not constitute financial advice.
-      </small>
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <small>
+          This tool is for informational purposes only and does not constitute financial advice.
+        </small>
+        <small class="muted">Green/white theme • v2 layout</small>
+      </div>
     </footer>
 
     <script src="/static/app.js" defer></script>
