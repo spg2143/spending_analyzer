@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Optional, List
 
+from fastapi.responses import StreamingResponse
+import io
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -149,3 +151,32 @@ async def reanalyze_statement(body: ReanalyzeRequest):
         "transactions": all_records,
     }
     return JSONResponse(content=jsonable_encoder(payload))
+
+@app.post("/api/export/csv")
+async def export_transactions_csv(payload: dict):
+    """
+    Expects: { "transactions": [ {date, description, amount, category?, direction?}, ... ] }
+    Returns: CSV download
+    """
+    transactions = payload.get("transactions", [])
+    if not isinstance(transactions, list) or len(transactions) == 0:
+        raise HTTPException(status_code=400, detail="No transactions provided.")
+
+    df = pd.DataFrame(transactions)
+
+    # Make sure column order is nice (only include if present)
+    preferred = ["date", "description", "amount", "direction", "category"]
+    cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    df = df[cols]
+
+    # Avoid Timestamp JSON/CSV weirdness
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+
+    filename = "transactions_export.csv"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(buf, media_type="text/csv", headers=headers)
