@@ -1,5 +1,7 @@
 // static/app.js
 
+"use strict";
+
 // --- DOM references ---
 const form = document.getElementById("upload-form");
 const statusEl = document.getElementById("status");
@@ -12,9 +14,11 @@ const previewEl = document.getElementById("preview-content");
 
 const categoriesFullEl = document.getElementById("categories-full-content");
 const suggestionsFullEl = document.getElementById("suggestions-full-content");
+
 const transactionsTableWrapper = document.getElementById("transactions-table-wrapper");
 const addTransactionBtn = document.getElementById("add-transaction-btn");
 const reanalyzeBtn = document.getElementById("reanalyze-btn");
+const downloadCsvBtn = document.getElementById("download-csv-btn");
 
 const pageStartInput = document.getElementById("page-start");
 const pageEndInput = document.getElementById("page-end");
@@ -24,8 +28,121 @@ const tabButtons = document.querySelectorAll(".tab-button");
 const tabPanels = document.querySelectorAll(".tab-panel");
 
 // --- State ---
-let currentTransactions = []; // full list of transactions from backend
+let currentTransactions = []; // latest transactions from backend
 let currentSummary = null;
+let isLoading = false;
+
+const ANALYZE_BTN_DEFAULT_TEXT = analyzeBtn?.textContent || "Analyze spending";
+
+// --- Utilities ---
+function setStatus(message, type) {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.className = `status status--${type}`;
+}
+
+function setLoading(nextLoading) {
+  isLoading = nextLoading;
+
+  if (analyzeBtn) {
+    analyzeBtn.disabled = nextLoading;
+    analyzeBtn.textContent = nextLoading ? "Working..." : ANALYZE_BTN_DEFAULT_TEXT;
+  }
+  if (reanalyzeBtn) reanalyzeBtn.disabled = nextLoading;
+  if (addTransactionBtn) addTransactionBtn.disabled = nextLoading;
+  if (downloadCsvBtn) downloadCsvBtn.disabled = nextLoading;
+}
+
+async function safeReadJson(response) {
+  const text = await response.text().catch(() => "");
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text };
+  }
+}
+
+async function fetchJson(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const err = (await safeReadJson(res)) || {};
+    const msg = err.detail || `Request failed (status ${res.status}).`;
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+function clearResults() {
+  if (summaryEl) {
+    summaryEl.innerHTML = "Upload a statement to see your totals.";
+    summaryEl.classList.add("empty-state");
+  }
+  if (categoriesOverviewEl) {
+    categoriesOverviewEl.innerHTML = "Categories will appear here.";
+    categoriesOverviewEl.classList.add("empty-state");
+  }
+  if (suggestionsOverviewEl) {
+    suggestionsOverviewEl.innerHTML =
+      "Once we analyze your spending, we'll suggest where you could save.";
+    suggestionsOverviewEl.classList.add("empty-state");
+  }
+  if (previewEl) {
+    previewEl.innerHTML = "A few example transactions will show up here.";
+    previewEl.classList.add("empty-state");
+  }
+  if (categoriesFullEl) {
+    categoriesFullEl.innerHTML =
+      "Categories will appear here after you upload a statement.";
+    categoriesFullEl.classList.add("empty-state");
+  }
+  if (suggestionsFullEl) {
+    suggestionsFullEl.innerHTML =
+      "Upload a statement and/or adjust your transactions, then recompute analysis to see suggestions here.";
+    suggestionsFullEl.classList.add("empty-state");
+  }
+  if (transactionsTableWrapper) {
+    transactionsTableWrapper.innerHTML = "No transactions loaded yet.";
+    transactionsTableWrapper.classList.add("empty-state");
+  }
+
+  currentSummary = null;
+  currentTransactions = [];
+}
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function parseAmount(text) {
+  if (!text) return NaN;
+  const cleaned = String(text).replace(/[^0-9.\-]/g, "");
+  return parseFloat(cleaned);
+}
+
+function normalizeDateString(s) {
+  // Accept "YYYY-MM-DD" or longer ISO; return "YYYY-MM-DD" if possible.
+  const t = String(s || "").trim();
+  if (!t) return "";
+  return t.length >= 10 ? t.slice(0, 10) : t;
+}
+
+function handleAnalysisResult(data) {
+  const { summary, preview, transactions } = data || {};
+  currentSummary = summary || null;
+  currentTransactions = Array.isArray(transactions) ? transactions : [];
+
+  renderSummary(summary?.overall);
+  renderCategoriesOverview(summary?.by_category);
+  renderCategoriesFull(summary?.by_category);
+  renderSuggestionsOverview(summary?.suggestions);
+  renderSuggestionsFull(summary?.suggestions);
+  renderPreview(preview);
+  renderTransactionsTable(currentTransactions);
+}
 
 // --- Tab switching ---
 tabButtons.forEach((btn) => {
@@ -37,70 +154,63 @@ tabButtons.forEach((btn) => {
     });
 
     tabPanels.forEach((panel) => {
-      panel.classList.toggle(
-        "tab-panel--active",
-        panel.dataset.tab === tab
-      );
+      panel.classList.toggle("tab-panel--active", panel.dataset.tab === tab);
     });
   });
 });
 
 // --- Upload & analyze ---
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
+if (form) {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (isLoading) return;
 
-  const fileInput = document.getElementById("statement");
-  if (!fileInput.files || fileInput.files.length === 0) {
-    setStatus("Please choose a file first.", "error");
-    return;
-  }
-
-  const file = fileInput.files[0];
-  const formData = new FormData();
-  formData.append("statement", file);
-
-  const pageStart = pageStartInput.value.trim();
-  const pageEnd = pageEndInput.value.trim();
-  if (pageStart) formData.append("page_start", pageStart);
-  if (pageEnd) formData.append("page_end", pageEnd);
-
-  setStatus("Analyzing your statement...", "loading");
-  setLoading(true);
-
-  try {
-    const response = await fetch("/api/analyze", {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const msg =
-        errorData.detail ||
-        `Something went wrong (status ${response.status}). Please try another file.`;
-      throw new Error(msg);
+    const fileInput = document.getElementById("statement");
+    if (!fileInput?.files || fileInput.files.length === 0) {
+      setStatus("Please choose a file first.", "error");
+      return;
     }
 
-    const data = await response.json();
-    handleAnalysisResult(data);
-    setStatus("Analysis complete ✅", "success");
-  } catch (err) {
-    console.error(err);
-    setStatus(err.message || "Unexpected error during analysis.", "error");
-    clearResults();
-  } finally {
-    setLoading(false);
-  }
-});
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append("statement", file);
+
+    const pageStart = pageStartInput?.value?.trim();
+    const pageEnd = pageEndInput?.value?.trim();
+    if (pageStart) formData.append("page_start", pageStart);
+    if (pageEnd) formData.append("page_end", pageEnd);
+
+    setStatus("Analyzing your statement...", "loading");
+    setLoading(true);
+
+    try {
+      const data = await fetchJson("/api/analyze", {
+        method: "POST",
+        body: formData,
+      });
+
+      handleAnalysisResult(data);
+      setStatus("Analysis complete ✅", "success");
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || "Unexpected error during analysis.", "error");
+      clearResults();
+    } finally {
+      setLoading(false);
+    }
+  });
+}
 
 // --- Reanalyze after manual edits ---
-reanalyzeBtn.addEventListener("click", async () => {
+reanalyzeBtn?.addEventListener("click", async () => {
+  if (isLoading) return;
+
   if (!currentTransactions || currentTransactions.length === 0) {
     setStatus("No transactions to re-analyze. Upload a file first.", "error");
     return;
   }
 
-  const updated = collectTransactionsFromTable();
+  const updated = collectTransactionsFromTable({ includeAutoColumns: false });
   if (updated.length === 0) {
     setStatus("No valid transactions in table to re-analyze.", "error");
     return;
@@ -110,21 +220,12 @@ reanalyzeBtn.addEventListener("click", async () => {
   setLoading(true);
 
   try {
-    const response = await fetch("/api/reanalyze", {
+    const data = await fetchJson("/api/reanalyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transactions: updated }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const msg =
-        errorData.detail ||
-        `Re-analysis failed (status ${response.status}).`;
-      throw new Error(msg);
-    }
-
-    const data = await response.json();
     handleAnalysisResult(data);
     setStatus("Analysis updated ✅", "success");
   } catch (err) {
@@ -136,10 +237,9 @@ reanalyzeBtn.addEventListener("click", async () => {
 });
 
 // --- Add new transaction row ---
-addTransactionBtn.addEventListener("click", () => {
-  if (!currentTransactions) {
-    currentTransactions = [];
-  }
+addTransactionBtn?.addEventListener("click", () => {
+  if (isLoading) return;
+
   const today = new Date().toISOString().slice(0, 10);
 
   currentTransactions.push({
@@ -153,61 +253,66 @@ addTransactionBtn.addEventListener("click", () => {
   renderTransactionsTable(currentTransactions);
 });
 
-// --- Helpers ---
+// --- Download CSV (exports what is currently shown/edited) ---
+downloadCsvBtn?.addEventListener("click", async () => {
+  if (isLoading) return;
 
-function setStatus(message, type) {
-  statusEl.textContent = message;
-  statusEl.className = `status status--${type}`;
-}
+  // Include category/direction as displayed in the table
+  const txns = collectTransactionsFromTable({ includeAutoColumns: true });
 
-function setLoading(isLoading) {
-  analyzeBtn.disabled = isLoading;
-  reanalyzeBtn.disabled = isLoading;
-  addTransactionBtn.disabled = isLoading;
+  if (!txns || txns.length === 0) {
+    alert("No transactions to export.");
+    return;
+  }
 
-  analyzeBtn.textContent = isLoading ? "Analyzing..." : "Analyze spending";
-}
+  setStatus("Preparing CSV download...", "loading");
+  setLoading(true);
 
-function clearResults() {
-  summaryEl.innerHTML = "Upload a statement to see your totals.";
-  categoriesOverviewEl.innerHTML = "Categories will appear here.";
-  suggestionsOverviewEl.innerHTML =
-    "Once we analyze your spending, we'll suggest where you could save.";
-  previewEl.innerHTML = "A few example transactions will show up here.";
+  try {
+    const res = await fetch("/api/export/csv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transactions: txns }),
+    });
 
-  categoriesFullEl.innerHTML =
-    "Categories will appear here after you upload a statement.";
-  suggestionsFullEl.innerHTML =
-    "Upload a statement and/or adjust your transactions, then recompute analysis to see suggestions here.";
+    if (!res.ok) {
+      const err = (await safeReadJson(res)) || {};
+      throw new Error(err.detail || `Export failed (${res.status}).`);
+    }
 
-  transactionsTableWrapper.innerHTML = "No transactions loaded yet.";
+    // Try to use filename from Content-Disposition if provided
+    let filename = "transactions_export.csv";
+    const cd = res.headers.get("Content-Disposition");
+    if (cd) {
+      const match = cd.match(/filename="([^"]+)"/i);
+      if (match?.[1]) filename = match[1];
+    }
 
-  summaryEl.classList.add("empty-state");
-  categoriesOverviewEl.classList.add("empty-state");
-  suggestionsOverviewEl.classList.add("empty-state");
-  previewEl.classList.add("empty-state");
-  categoriesFullEl.classList.add("empty-state");
-  suggestionsFullEl.classList.add("empty-state");
-  transactionsTableWrapper.classList.add("empty-state");
-}
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
 
-function handleAnalysisResult(data) {
-  const { summary, preview, transactions } = data;
-  currentSummary = summary;
-  currentTransactions = transactions || [];
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 
-  renderSummary(summary.overall);
-  renderCategoriesOverview(summary.by_category);
-  renderCategoriesFull(summary.by_category);
-  renderSuggestionsOverview(summary.suggestions);
-  renderSuggestionsFull(summary.suggestions);
-  renderPreview(preview);
-  renderTransactionsTable(currentTransactions);
-}
+    window.URL.revokeObjectURL(url);
+    setStatus("Download started ✅", "success");
+  } catch (e) {
+    console.error(e);
+    alert(e.message || "Export failed.");
+    setStatus("Export failed.", "error");
+  } finally {
+    setLoading(false);
+  }
+});
 
 // --- Rendering functions ---
-
 function renderSummary(overall) {
+  if (!summaryEl) return;
+
   if (!overall) {
     summaryEl.innerHTML = "No summary data available.";
     summaryEl.classList.add("empty-state");
@@ -229,25 +334,25 @@ function renderSummary(overall) {
     <div class="summary-grid">
       <div class="summary-item">
         <span class="summary-label">Total inflow</span>
-        <span class="summary-value positive">$${inflow.toFixed(2)}</span>
+        <span class="summary-value positive">$${Number(inflow).toFixed(2)}</span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Total outflow</span>
-        <span class="summary-value negative">$${Math.abs(outflow).toFixed(2)}</span>
+        <span class="summary-value negative">$${Math.abs(Number(outflow)).toFixed(2)}</span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Net</span>
         <span class="summary-value ${net >= 0 ? "positive" : "negative"}">
-          $${net.toFixed(2)}
+          $${Number(net).toFixed(2)}
         </span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Transactions</span>
-        <span class="summary-value">${overall.n_transactions}</span>
+        <span class="summary-value">${overall.n_transactions ?? 0}</span>
       </div>
       <div class="summary-item summary-item--span">
         <span class="summary-label">Statement period</span>
-        <span class="summary-value">${period}</span>
+        <span class="summary-value">${escapeHtml(period)}</span>
       </div>
     </div>
   `;
@@ -262,6 +367,8 @@ function renderCategoriesFull(byCategory) {
 }
 
 function renderCategoriesIntoElement(byCategory, targetEl) {
+  if (!targetEl) return;
+
   if (!byCategory || byCategory.length === 0) {
     targetEl.innerHTML = "No expense categories found.";
     targetEl.classList.add("empty-state");
@@ -277,10 +384,10 @@ function renderCategoriesIntoElement(byCategory, targetEl) {
       const count = cat.count ?? 0;
       return `
         <tr>
-          <td>${cat.category}</td>
-          <td>$${total.toFixed(2)}</td>
-          <td>${count}</td>
-          <td>${share.toFixed(1)}%</td>
+          <td>${escapeHtml(cat.category)}</td>
+          <td>$${Number(total).toFixed(2)}</td>
+          <td>${Number(count)}</td>
+          <td>${Number(share).toFixed(1)}%</td>
         </tr>
       `;
     })
@@ -297,9 +404,7 @@ function renderCategoriesIntoElement(byCategory, targetEl) {
             <th>Share of spend</th>
           </tr>
         </thead>
-        <tbody>
-          ${rows}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>
     </div>
   `;
@@ -314,6 +419,8 @@ function renderSuggestionsFull(suggestions) {
 }
 
 function renderSuggestionsIntoElement(suggestions, targetEl) {
+  if (!targetEl) return;
+
   if (!suggestions || suggestions.length === 0) {
     targetEl.innerHTML =
       "We couldn't generate specific savings ideas from this file. Try a longer period or adjust your transactions.";
@@ -327,21 +434,19 @@ function renderSuggestionsIntoElement(suggestions, targetEl) {
     .map(
       (sugg) => `
       <li class="suggestion-item">
-        <strong>${sugg.category}</strong><br />
-        <span>${sugg.message}</span>
+        <strong>${escapeHtml(sugg.category)}</strong><br />
+        <span>${escapeHtml(sugg.message)}</span>
       </li>
     `
     )
     .join("");
 
-  targetEl.innerHTML = `
-    <ul class="suggestions-list">
-      ${items}
-    </ul>
-  `;
+  targetEl.innerHTML = `<ul class="suggestions-list">${items}</ul>`;
 }
 
 function renderPreview(preview) {
+  if (!previewEl) return;
+
   if (!preview || preview.length === 0) {
     previewEl.innerHTML = "No preview rows available.";
     previewEl.classList.add("empty-state");
@@ -351,23 +456,24 @@ function renderPreview(preview) {
   previewEl.classList.remove("empty-state");
 
   const columns = ["date", "description", "amount", "category", "direction"].filter((col) =>
-    preview.some((row) => col in row)
+    preview.some((row) => row && col in row)
   );
 
-  const headerRow = columns.map((col) => `<th>${col}</th>`).join("");
+  const headerRow = columns.map((col) => `<th>${escapeHtml(col)}</th>`).join("");
 
   const bodyRows = preview
     .map((row) => {
       const cells = columns
         .map((col) => {
-          let value = row[col];
+          let value = row?.[col];
+
           if (col === "amount" && typeof value === "number") {
             value = `$${value.toFixed(2)}`;
           }
-          if (col === "date" && typeof value === "string") {
-            value = value.slice(0, 10);
+          if (col === "date") {
+            value = normalizeDateString(value);
           }
-          return `<td>${value ?? ""}</td>`;
+          return `<td>${escapeHtml(value ?? "")}</td>`;
         })
         .join("");
       return `<tr>${cells}</tr>`;
@@ -385,6 +491,8 @@ function renderPreview(preview) {
 }
 
 function renderTransactionsTable(transactions) {
+  if (!transactionsTableWrapper) return;
+
   if (!transactions || transactions.length === 0) {
     transactionsTableWrapper.innerHTML = "No transactions loaded yet.";
     transactionsTableWrapper.classList.add("empty-state");
@@ -395,20 +503,20 @@ function renderTransactionsTable(transactions) {
 
   const rows = transactions
     .map((tx, idx) => {
-      const date = tx.date ? String(tx.date).slice(0, 10) : "";
+      const date = normalizeDateString(tx.date);
       const desc = tx.description ?? "";
       const amount =
-        typeof tx.amount === "number" ? tx.amount.toFixed(2) : tx.amount ?? "";
+        typeof tx.amount === "number" ? tx.amount.toFixed(2) : (tx.amount ?? "");
       const category = tx.category ?? "Uncategorized";
       const direction = tx.direction ?? "unknown";
 
       return `
         <tr data-index="${idx}">
-          <td data-field="date" contenteditable="true">${date}</td>
+          <td data-field="date" contenteditable="true">${escapeHtml(date)}</td>
           <td data-field="description" contenteditable="true">${escapeHtml(desc)}</td>
-          <td data-field="amount" contenteditable="true">${amount}</td>
-          <td>${category}</td>
-          <td>${direction}</td>
+          <td data-field="amount" contenteditable="true">${escapeHtml(amount)}</td>
+          <td data-field="category">${escapeHtml(category)}</td>
+          <td data-field="direction">${escapeHtml(direction)}</td>
         </tr>
       `;
     })
@@ -426,15 +534,18 @@ function renderTransactionsTable(transactions) {
             <th>Direction (auto)</th>
           </tr>
         </thead>
-        <tbody>
-          ${rows}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>
     </div>
   `;
 }
 
-function collectTransactionsFromTable() {
+/**
+ * Collect transactions from the editable table.
+ * - includeAutoColumns=false -> sends only date/description/amount (good for /api/reanalyze)
+ * - includeAutoColumns=true  -> also includes category/direction from the table (good for export)
+ */
+function collectTransactionsFromTable({ includeAutoColumns } = { includeAutoColumns: false }) {
   const table = document.getElementById("transactions-table");
   if (!table) return [];
 
@@ -445,36 +556,31 @@ function collectTransactionsFromTable() {
     const dateCell = row.querySelector('td[data-field="date"]');
     const descCell = row.querySelector('td[data-field="description"]');
     const amountCell = row.querySelector('td[data-field="amount"]');
+    const catCell = row.querySelector('td[data-field="category"]');
+    const dirCell = row.querySelector('td[data-field="direction"]');
 
-    const date = (dateCell?.textContent || "").trim();
+    const date = normalizeDateString((dateCell?.textContent || "").trim());
     const description = (descCell?.textContent || "").trim();
     const amountStr = (amountCell?.textContent || "").trim();
     const parsedAmount = parseAmount(amountStr);
 
-    if (!date && (amountStr === "" || isNaN(parsedAmount))) {
-      // Completely empty row – skip
-      return;
-    }
+    // Skip totally empty rows
+    const empty = !date && !description && (amountStr === "" || Number.isNaN(parsedAmount));
+    if (empty) return;
 
-    result.push({
+    const tx = {
       date,
       description,
-      amount: isNaN(parsedAmount) ? null : parsedAmount,
-    });
+      amount: Number.isNaN(parsedAmount) ? null : parsedAmount,
+    };
+
+    if (includeAutoColumns) {
+      tx.category = (catCell?.textContent || "").trim() || "Uncategorized";
+      tx.direction = (dirCell?.textContent || "").trim() || "unknown";
+    }
+
+    result.push(tx);
   });
 
   return result;
-}
-
-function parseAmount(text) {
-  if (!text) return NaN;
-  const cleaned = text.replace(/[^0-9.\-]/g, "");
-  return parseFloat(cleaned);
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }
