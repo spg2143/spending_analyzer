@@ -1,307 +1,185 @@
+# backend/services/categorizer.py
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, List, Tuple
 
-import joblib
 import pandas as pd
 
-from .optimizer import build_suggestions
+from backend.services.category_model import EmbeddingKNNCategoryModel
 
-# ---------------------------------------------------------------------------
-# Optional ML model (TF-IDF + Linear SVM)
-# ---------------------------------------------------------------------------
+# Paths (match your repo layout)
+_BACKEND_DIR = Path(__file__).resolve().parents[1]  # .../backend
+TAXONOMY_PATH = _BACKEND_DIR / "data" / "category_taxonomy.json"
+ARTIFACT_DIR = _BACKEND_DIR / "models" / "category_knn"  # new artifacts live here
 
-MODEL = None
-
-
-def _load_model_if_exists() -> None:
-    """Load ML model from backend/models/category_model.joblib if present."""
-    global MODEL
-    model_path = Path(__file__).resolve().parents[1] / "models" / "category_model.joblib"
-    if model_path.exists():
-        try:
-            MODEL = joblib.load(model_path)
-            print(f"[categorizer] Loaded ML category model from {model_path}")
-        except Exception as e:
-            MODEL = None
-            print(f"[categorizer] Failed to load ML model: {e}")
-    else:
-        print("[categorizer] No ML model found, using rule-based categories only.")
+# Global cached model (loaded once)
+_MODEL = None
 
 
-_load_model_if_exists()
+def _ensure_model() -> EmbeddingKNNCategoryModel | None:
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
 
-# ---------------------------------------------------------------------------
-# Rule-based fallback categories
-# ---------------------------------------------------------------------------
+    if (ARTIFACT_DIR / "meta.json").exists():
+        _MODEL = EmbeddingKNNCategoryModel.load(ARTIFACT_DIR)
+        return _MODEL
 
-EXPENSE_CATEGORY_KEYWORDS = {
-    "Rent & Office": ["rent", "office", "cowork", "wework"],
-    "Utilities": ["utility", "utilities", "electric", "gas", "wasser", "water", "energie"],
-    "Payroll & Contractors": [
-        "salary",
-        "payroll",
-        "wage",
-        "paychex",
-        "gusto",
-        "upwork",
-        "freelance",
-        "contractor",
-    ],
-    "Travel & Transport": [
-        "uber",
-        "lyft",
-        "taxi",
-        "bahn",
-        "train",
-        "flight",
-        "airline",
-        "hotel",
-        "airbnb",
-        "fuel",
-        "gasstation",
-        "shell",
-        "esso",
-        "bp",
-    ],
-    "Supplies & Inventory": [
-        "stationery",
-        "staples",
-        "office depot",
-        "inventory",
-        "stock",
-        "supplies",
-    ],
-    "Software & Subscriptions": [
-        "saas",
-        "subscription",
-        "subscript",
-        "aws",
-        "azure",
-        "gcp",
-        "google workspace",
-        "microsoft",
-        "office365",
-        "adobe",
-        "slack",
-        "zoom",
-        "shopify plan",
-        "quickbooks",
-    ],
-    "Advertising & Marketing": [
-        "adwords",
-        "google ads",
-        "facebook ads",
-        "instagram ads",
-        "linkedin ads",
-        "meta ads",
-        "campaign",
-        "marketing",
-        "advertising",
-    ],
-    "Bank & Fees": [
-        "fee",
-        "charges",
-        "charge",
-        "overdraft",
-        "interest",
-        "commission",
-        "processing",
-    ],
-    "Taxes": [
-        "tax",
-        "vat",
-        "gst",
-        "finanzamt",
-        "irs",
-        "revenue service",
-    ],
-    "Other Expense": [],
-}
-
-INCOME_CATEGORY_KEYWORDS = {
-    "Sales Income": [
-        "stripe",
-        "shopify",
-        "paypal",
-        "square",
-        "pos",
-        "card payment",
-        "customer payment",
-        "invoice",
-    ],
-    "Interest & Other Income": [
-        "interest",
-        "refund",
-        "rebate",
-        "cashback",
-    ],
-    "Owner Contribution": [
-        "capital",
-        "owner",
-        "contribution",
-        "equity",
-    ],
-    "Other Income": [],
-}
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Public functions
-# ---------------------------------------------------------------------------
+def _safe_date_to_str(x) -> str:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    try:
+        dt = pd.to_datetime(x, errors="coerce")
+        if pd.isna(dt):
+            return str(x)[:10]
+        return dt.date().isoformat()
+    except Exception:
+        return str(x)[:10]
+
+
+def _direction_from_amount(a) -> str:
+    try:
+        if a is None or (isinstance(a, float) and pd.isna(a)):
+            return "unknown"
+        a = float(a)
+        if a > 0:
+            return "inflow"
+        if a < 0:
+            return "outflow"
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _build_model_text(description: str, direction: str) -> str:
+    # Add direction token to help model separate income vs spend
+    desc = (description or "").strip()
+    return f"{desc} | {direction}"
+
 
 def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds:
-        - direction: "inflow", "outflow" or "zero" / "unknown"
-        - category: ML-based if model exists, otherwise rule-based
+      - direction
+      - category
+      - category_confidence
+      - category_reason
     """
-    # Direction from amount
-    if "amount" not in df.columns:
-        df["direction"] = "unknown"
-        df["category"] = "Uncategorized"
-        return df
+    df = df.copy()
 
-    df["direction"] = df["amount"].apply(
-        lambda x: "inflow" if x > 0 else ("outflow" if x < 0 else "zero")
-    )
-
+    # Ensure expected columns exist
     if "description" not in df.columns:
         df["description"] = ""
+    if "amount" not in df.columns:
+        df["amount"] = 0.0
+    if "date" not in df.columns:
+        df["date"] = ""
 
-    df["description_filled"] = df["description"].fillna("").astype(str)
+    # Normalize
+    df["description"] = df["description"].astype(str).fillna("").str.strip()
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    df["direction"] = df["amount"].apply(_direction_from_amount)
 
-    # 1) Try ML model if loaded
-    if MODEL is not None:
-        try:
-            preds = MODEL.predict(df["description_filled"])
-            df["category"] = [str(p) for p in preds]
-        except Exception as e:
-            print(f"[categorizer] ML prediction failed, falling back to rules: {e}")
-            df["category"] = df.apply(
-                lambda row: _assign_category(row["description_filled"], row["direction"]),
-                axis=1,
-            )
-    else:
-        # 2) Pure rule-based
-        df["category"] = df.apply(
-            lambda row: _assign_category(row["description_filled"], row["direction"]),
-            axis=1,
-        )
+    # Convert date to string early for JSON safety
+    df["date"] = df["date"].apply(_safe_date_to_str)
 
-    df = df.drop(columns=["description_filled"])
+    model = _ensure_model()
+
+    if model is None:
+        # No artifacts yet -> fallback
+        df["category"] = "Uncategorized"
+        df["category_confidence"] = 0.0
+        df["category_reason"] = "No model artifacts found. Train model to enable categorization."
+        return df
+
+    cats = []
+    confs = []
+    reasons = []
+
+    for _, row in df.iterrows():
+        text = _build_model_text(row.get("description", ""), row.get("direction", "unknown"))
+        pred = model.predict_one(text)
+        cats.append(pred.category)
+        confs.append(pred.confidence)
+        reasons.append(pred.reason)
+
+    df["category"] = cats
+    df["category_confidence"] = confs
+    df["category_reason"] = reasons
     return df
 
 
-def build_category_summary(df: pd.DataFrame) -> Dict[str, Any]:
+def build_category_summary(df: pd.DataFrame) -> Dict:
     """
-    Build a JSON-friendly summary:
-        - overall totals
-        - category breakdown
-        - monthly summary (if dates exist)
-        - suggestions
+    Returns the shape your frontend expects:
+      summary = {
+        overall: {...},
+        by_category: [...],
+        suggestions: [...]
+      }
     """
-    if "amount" in df.columns:
-        total_inflow = df.loc[df["amount"] > 0, "amount"].sum()
-        total_outflow = df.loc[df["amount"] < 0, "amount"].sum()
-    else:
-        total_inflow = 0.0
-        total_outflow = 0.0
+    df = df.copy()
+    df["amount"] = pd.to_numeric(df.get("amount", 0.0), errors="coerce").fillna(0.0)
 
-    net = total_inflow + total_outflow
+    # Overall
+    inflow = df.loc[df["amount"] > 0, "amount"].sum()
+    outflow = df.loc[df["amount"] < 0, "amount"].abs().sum()
+    net = inflow - outflow
+    n_transactions = len(df)
 
-    if "date" in df.columns and pd.api.types.is_datetime64_any_dtype(df["date"]):
-        period_start = df["date"].min()
-        period_end = df["date"].max()
-        period_start_str = period_start.strftime("%Y-%m-%d") if pd.notna(period_start) else None
-        period_end_str = period_end.strftime("%Y-%m-%d") if pd.notna(period_end) else None
-    else:
-        period_start_str = None
-        period_end_str = None
+    # Statement period (best effort)
+    dates = pd.to_datetime(df.get("date", ""), errors="coerce")
+    period_start = dates.min().date().isoformat() if not pd.isna(dates.min()) else None
+    period_end = dates.max().date().isoformat() if not pd.isna(dates.max()) else None
 
-    category_expenses: List[Dict[str, Any]] = []
-    if "category" in df.columns and "amount" in df.columns:
-        outflows = df[df["amount"] < 0].copy()
-        if not outflows.empty:
-            grouped = outflows.groupby("category")["amount"].agg(["sum", "count"]).reset_index()
-            total_abs_outflow = -grouped["sum"].sum()
+    overall = {
+        "total_inflow": float(inflow),
+        "total_outflow": float(outflow),
+        "net": float(net),
+        "n_transactions": int(n_transactions),
+        "period_start": period_start,
+        "period_end": period_end,
+    }
 
-            for _, row in grouped.sort_values("sum").iterrows():
-                category = row["category"]
-                total = float(-row["sum"])  # make positive
-                count = int(row["count"])
-                share = float(total / total_abs_outflow) if total_abs_outflow > 0 else 0.0
+    # Spending by category (only outflows)
+    spend_df = df[df["amount"] < 0].copy()
+    spend_df["spend"] = spend_df["amount"].abs()
 
-                category_expenses.append(
-                    {
-                        "category": category,
-                        "total": round(total, 2),
-                        "count": count,
-                        "share": round(share, 4),
-                    }
-                )
+    by_category = []
+    if not spend_df.empty:
+        grp = spend_df.groupby("category", dropna=False)["spend"].agg(["sum", "count"]).reset_index()
+        total_spend = grp["sum"].sum() if grp["sum"].sum() != 0 else 1.0
+        grp["share"] = grp["sum"] / total_spend
 
-    monthly_summary: List[Dict[str, Any]] = []
-    if "date" in df.columns and pd.api.types.is_datetime64_any_dtype(df["date"]):
-        df["year_month"] = df["date"].dt.to_period("M").astype(str)
-        grouped_month = (
-            df.groupby("year_month")["amount"]
-            .agg(
-                total="sum",
-                inflow=lambda s: s[s > 0].sum(),
-                outflow=lambda s: s[s < 0].sum(),
-            )
-            .reset_index()
-        )
-        for _, row in grouped_month.iterrows():
-            ym = row["year_month"]
-            inflow = float(row["inflow"])
-            outflow = float(row["outflow"])
-            monthly_summary.append(
+        grp = grp.sort_values("sum", ascending=False)
+        for _, r in grp.iterrows():
+            by_category.append(
                 {
-                    "month": ym,
-                    "inflow": round(inflow, 2),
-                    "outflow": round(outflow, 2),
-                    "net": round(float(row["total"]), 2),
+                    "category": str(r["category"]) if pd.notna(r["category"]) else "Uncategorized",
+                    "total": float(r["sum"]),
+                    "count": int(r["count"]),
+                    "share": float(r["share"]),
                 }
             )
 
-    suggestions = build_suggestions(category_expenses)
+    # Suggestions (simple heuristic: top categories)
+    suggestions = []
+    for item in by_category[:5]:
+        cat = item["category"]
+        total = item["total"]
+        if total <= 0:
+            continue
+        save_10 = total * 0.10
+        suggestions.append(
+            {
+                "category": cat,
+                "message": f"You spent about {total:.2f} in '{cat}'. Reducing this by 10% would save roughly {save_10:.2f} over this statement period.",
+            }
+        )
 
-    return {
-        "overall": {
-            "total_inflow": round(float(total_inflow), 2),
-            "total_outflow": round(float(total_outflow), 2),
-            "net": round(float(net), 2),
-            "n_transactions": int(len(df)),
-            "period_start": period_start_str,
-            "period_end": period_end_str,
-        },
-        "by_category": category_expenses,
-        "by_month": monthly_summary,
-        "suggestions": suggestions,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Rule-based fallback helper
-# ---------------------------------------------------------------------------
-
-def _assign_category(description: str, direction: str) -> str:
-    desc = description.lower()
-
-    if direction == "outflow":
-        for category, keywords in EXPENSE_CATEGORY_KEYWORDS.items():
-            if any(kw in desc for kw in keywords):
-                return category
-        return "Other Expense"
-
-    elif direction == "inflow":
-        for category, keywords in INCOME_CATEGORY_KEYWORDS.items():
-            if any(kw in desc for kw in keywords):
-                return category
-        return "Other Income"
-
-    else:
-        return "Uncategorized"
+    return {"overall": overall, "by_category": by_category, "suggestions": suggestions}
