@@ -8,3 +8,5 @@ scikit-learn
 joblib
 uvicorn
 gunicorn
+sentence-transformers==2.7.0
+torch
