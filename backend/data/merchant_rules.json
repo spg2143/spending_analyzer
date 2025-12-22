@@ -1,0 +1,13 @@
+[
+  { "pattern": "\\bpayment\\s+thank\\s+you\\b|\\bautopay\\b|\\bonline\\s+payment\\b", "category": "Transfers", "priority": 100 },
+  { "pattern": "\\buber\\b", "category": "Travel & Transport", "priority": 90 },
+
+  { "pattern": "\\bpret\\b|\\bbluestone\\b|\\bmatto\\b|\\bcoffee\\s+project\\b|\\bcafe\\b", "category": "Meals & Entertainment", "priority": 80 },
+  { "pattern": "\\bjubilee\\s+market\\b|\\bgold\\s+mini\\s+mart\\b", "category": "Groceries & Convenience", "priority": 80 },
+
+  { "pattern": "\\bbetterhelp\\b|\\bhot\\s+yoga\\b|\\bclubpilates\\b", "category": "Health & Wellness", "priority": 80 },
+
+  { "pattern": "\\bsunoco\\b|\\bvalero\\b", "category": "Fuel & Auto", "priority": 80 },
+
+  { "pattern": "\\bopenai\\b|\\bchatgpt\\b", "category": "Software & Subscriptions", "priority": 80 }
+]

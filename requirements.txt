@@ -11,3 +11,5 @@ gunicorn
 sentence-transformers==2.7.0
 torch
 numpy
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9

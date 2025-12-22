@@ -1,17 +1,24 @@
+# main.py
+
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi.responses import StreamingResponse
 import io
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel
-
 import os
 import pandas as pd
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from backend.db import init_db, Base, get_db
+import backend.db as db
+from backend.models.vendor_map import VendorMap  # ensures model is registered
+from backend.repositories.vendor_map_repo import upsert_vendor_mapping, delete_vendor_mapping
 
 from backend.services.statement_reader import (
     load_statement_from_upload,
@@ -30,8 +37,20 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 app = FastAPI(
     title="Small Business Spend Analyzer",
     description="Upload a bank statement (CSV, Excel, PDF) and get a spending breakdown.",
-    version="1.1.0",
+    version="1.2.0",
 )
+
+
+# -------------------- Startup: DB init --------------------
+
+@app.on_event("startup")
+def _startup():
+    ok = init_db()
+    if ok:
+        Base.metadata.create_all(bind=db.ENGINE)
+
+
+# -------------------- Middleware --------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +72,7 @@ async def serve_index():
     return FileResponse(str(index_path))
 
 
-# ---------- Models for manual re-analysis ----------
+# -------------------- Pydantic models --------------------
 
 class TransactionIn(BaseModel):
     date: Optional[str] = None
@@ -65,13 +84,19 @@ class ReanalyzeRequest(BaseModel):
     transactions: List[TransactionIn]
 
 
-# ---------- Endpoints ----------
+class VendorMapIn(BaseModel):
+    vendor: str
+    category: str
+
+
+# -------------------- Endpoints --------------------
 
 @app.post("/api/analyze")
 async def analyze_statement(
     statement: UploadFile = File(...),
     page_start: Optional[int] = Form(None),
     page_end: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
 ):
     """
     Accept a bank statement upload and return:
@@ -87,9 +112,10 @@ async def analyze_statement(
         file_bytes = await statement.read()
         if len(file_bytes) > MAX_UPLOAD_BYTES:
             raise HTTPException(
-        status_code=413,
-        detail=f"File too large. Max allowed is {MAX_UPLOAD_MB} MB."
-    )
+                status_code=413,
+                detail=f"File too large. Max allowed is {MAX_UPLOAD_MB} MB.",
+            )
+
         df = load_statement_from_upload(
             statement.filename,
             file_bytes,
@@ -104,7 +130,8 @@ async def analyze_statement(
     if df is None or df.empty:
         raise HTTPException(status_code=400, detail="No transactions found in file.")
 
-    df = categorize_transactions(df)
+    # IMPORTANT: pass db so vendor_map is used (highest precision)
+    df = categorize_transactions(df, db=db)
     summary = build_category_summary(df)
 
     preview_records = df.head(15).to_dict(orient="records")
@@ -119,7 +146,7 @@ async def analyze_statement(
 
 
 @app.post("/api/reanalyze")
-async def reanalyze_statement(body: ReanalyzeRequest):
+async def reanalyze_statement(body: ReanalyzeRequest, db: Session = Depends(get_db)):
     """
     Re-run the analysis on user-edited / manually-entered transactions.
     Expects a JSON body with:
@@ -128,18 +155,17 @@ async def reanalyze_statement(body: ReanalyzeRequest):
     if not body.transactions:
         raise HTTPException(status_code=400, detail="No transactions provided.")
 
-    # Build DataFrame from incoming rows
     raw = [t.dict() for t in body.transactions]
     df = pd.DataFrame(raw)
 
-    # Standardize & clean like a generic CSV
     df = _standardize_column_names(df)
     df = _clean_transaction_df(df)
 
     if df.empty:
         raise HTTPException(status_code=400, detail="No valid transactions after cleaning.")
 
-    df = categorize_transactions(df)
+    # IMPORTANT: pass db so vendor_map is used
+    df = categorize_transactions(df, db=db)
     summary = build_category_summary(df)
 
     preview_records = df.head(15).to_dict(orient="records")
@@ -151,6 +177,7 @@ async def reanalyze_statement(body: ReanalyzeRequest):
         "transactions": all_records,
     }
     return JSONResponse(content=jsonable_encoder(payload))
+
 
 @app.post("/api/export/csv")
 async def export_transactions_csv(payload: dict):
@@ -164,12 +191,10 @@ async def export_transactions_csv(payload: dict):
 
     df = pd.DataFrame(transactions)
 
-    # Make sure column order is nice (only include if present)
     preferred = ["date", "description", "amount", "direction", "category"]
     cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
     df = df[cols]
 
-    # Avoid Timestamp JSON/CSV weirdness
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
 
@@ -180,3 +205,24 @@ async def export_transactions_csv(payload: dict):
     filename = "transactions_export.csv"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(buf, media_type="text/csv", headers=headers)
+
+
+# -------------------- Vendor map endpoints (Postgres) --------------------
+
+@app.post("/api/vendor-map")
+def save_vendor_map(body: VendorMapIn, db: Session = Depends(get_db)):
+    """
+    Save a persistent mapping: vendor -> category.
+    Your categorizer will apply these BEFORE rules/ML.
+    """
+    try:
+        upsert_vendor_mapping(db, vendor=body.vendor, category=body.category)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/vendor-map")
+def remove_vendor_map(vendor: str, db: Session = Depends(get_db)):
+    ok = delete_vendor_mapping(db, vendor=vendor)
+    return {"ok": ok}

@@ -1,19 +1,33 @@
 {
   "categories": [
+    "Transfers",
     "Sales Income",
+    "Refunds & Chargebacks",
+    "Interest Income",
     "Other Income",
-    "Interest & Other Income",
-    "Owner Contribution",
+
+    "Cost of Goods Sold",
+    "Inventory & Supplies",
+    "Shipping & Postage",
+
     "Payroll & Contractors",
     "Rent & Office",
     "Utilities",
-    "Travel & Transport",
-    "Advertising & Marketing",
-    "Supplies & Inventory",
     "Software & Subscriptions",
+    "Advertising & Marketing",
+    "Travel",
+    "Meals & Entertainment",
+    "Vehicle & Fuel",
+    "Professional Services",
+    "Insurance",
     "Bank & Fees",
-    "Taxes",
-    "Other Expense",
+    "Taxes & Licenses",
+    "Repairs & Maintenance",
+    "Other Operating Expense",
+
+    "Owner Contribution",
+    "Owner Draw",
+
     "Uncategorized"
   ]
 }
