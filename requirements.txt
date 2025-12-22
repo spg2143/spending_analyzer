@@ -10,3 +10,4 @@ uvicorn
 gunicorn
 sentence-transformers==2.7.0
 torch
+numpy
