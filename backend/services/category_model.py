@@ -10,13 +10,18 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
+import re
 
 
 def _normalize_text(s: str) -> str:
     s = (s or "").strip().lower()
-    s = " ".join(s.split())
-    return s
 
+    # Remove common noise patterns (transaction ids, ref numbers, long digit runs)
+    s = re.sub(r"\b\d{2,}\b", " ", s)               # remove long numbers
+    s = re.sub(r"[\*\#\@\|\/\\]", " ", s)          # remove common separators
+    s = re.sub(r"[^a-z\s&\-]", " ", s)             # keep letters, spaces, & and -
+    s = re.sub(r"\s+", " ", s).strip()             # collapse whitespace
+    return s
 
 @dataclass
 class Prediction:

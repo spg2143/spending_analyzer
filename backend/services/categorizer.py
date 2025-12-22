@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict
 
+import os
 import pandas as pd
 
 from backend.services.category_model import EmbeddingKNNCategoryModel
@@ -22,6 +23,11 @@ def _ensure_model() -> EmbeddingKNNCategoryModel | None:
 
     if (ARTIFACT_DIR / "meta.json").exists():
         _MODEL = EmbeddingKNNCategoryModel.load(ARTIFACT_DIR)
+
+        # ---- runtime tuning (NO retrain needed) ----
+        _MODEL.top_k = int(os.getenv("CAT_TOPK", "12"))
+        _MODEL.min_similarity = float(os.getenv("CAT_MIN_SIM", "0.45"))
+        _MODEL.min_winner_share = float(os.getenv("CAT_MIN_SHARE", "0.40"))
         return _MODEL
 
     return None
