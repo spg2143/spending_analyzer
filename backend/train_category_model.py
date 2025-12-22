@@ -1,17 +1,24 @@
-# train_category_model.py
+# backend/train_category_model.py
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+# --- Make imports work when running this file directly ---
+# Adds project root to sys.path so `import backend...` works.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.services.statement_reader import load_statement_from_upload
 from backend.services.category_model import EmbeddingKNNCategoryModel
 
 
-BACKEND_DIR = Path(__file__).resolve().parent / "backend"
+BACKEND_DIR = PROJECT_ROOT / "backend"
 DEFAULT_STATEMENTS_DIR = BACKEND_DIR / "data" / "statements"
 DEFAULT_TAXONOMY = BACKEND_DIR / "data" / "category_taxonomy.json"
 DEFAULT_ARTIFACT_DIR = BACKEND_DIR / "models" / "category_knn"
@@ -30,6 +37,12 @@ def cmd_build_unlabeled(args):
     out_csv = Path(args.out_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
+    if not statements_dir.exists():
+        raise FileNotFoundError(
+            f"Statements dir not found: {statements_dir}\n"
+            f"Create it and put PDFs/CSVs there."
+        )
+
     rows = []
     for fp in iter_statement_files(statements_dir):
         try:
@@ -38,7 +51,7 @@ def cmd_build_unlabeled(args):
             if df is None or df.empty:
                 continue
 
-            # Standardize expected columns
+            # Ensure expected columns
             if "date" not in df.columns:
                 df["date"] = ""
             if "description" not in df.columns:
@@ -50,21 +63,21 @@ def cmd_build_unlabeled(args):
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
 
             for _, r in df.iterrows():
+                desc = str(r.get("description", "")).strip()
+                if not desc:
+                    continue
                 rows.append(
                     {
                         "source_file": fp.name,
                         "date": str(r.get("date", ""))[:10],
-                        "description": r.get("description", ""),
+                        "description": desc,
                         "amount": r.get("amount", None),
                     }
                 )
         except Exception as e:
             print(f"[WARN] failed to parse {fp.name}: {e}")
 
-    out = pd.DataFrame(rows).dropna(subset=["description"]).copy()
-    out["description"] = out["description"].astype(str)
-    out = out[out["description"].str.len() > 0].copy()
-
+    out = pd.DataFrame(rows)
     out.to_csv(out_csv, index=False)
     print(f"Saved {len(out)} unlabeled transactions to {out_csv}")
 
@@ -95,9 +108,11 @@ def cmd_self_train(args):
     min_winner_share = float(args.min_winner_share)
     max_add_per_round = int(args.max_add_per_round)
 
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     for r in range(rounds):
-        tmp = Path(args.out_dir) / f"_tmp_seed_round_{r+1}.csv"
-        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+        tmp = out_dir / f"_tmp_seed_round_{r+1}.csv"
         labeled[["description", "category"]].to_csv(tmp, index=False)
 
         model = EmbeddingKNNCategoryModel(
@@ -123,7 +138,7 @@ def cmd_self_train(args):
         unl["confidence"] = preds_conf
         unl["reason"] = preds_reason
 
-        suggested_out = Path(args.out_dir) / f"suggested_labels_round_{r+1}.csv"
+        suggested_out = out_dir / f"suggested_labels_round_{r+1}.csv"
         unl.to_csv(suggested_out, index=False)
         print(f"Saved suggestions to {suggested_out}")
 
@@ -143,7 +158,6 @@ def cmd_self_train(args):
 
         labeled = pd.concat([labeled, add], ignore_index=True)
 
-        # remove accepted
         unl = unl.drop(index=accepted.index).reset_index(drop=True)
 
         print(f"Round {r+1}: accepted {len(add)} rows. Remaining unlabeled: {len(unl)}")
@@ -173,13 +187,11 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    # build-unlabeled
     p1 = sub.add_parser("build-unlabeled")
     p1.add_argument("--statements-dir", default=str(DEFAULT_STATEMENTS_DIR))
     p1.add_argument("--out-csv", default=str(DEFAULT_TRAINING_DIR / "unlabeled_transactions.csv"))
     p1.set_defaults(func=cmd_build_unlabeled)
 
-    # self-train
     p2 = sub.add_parser("self-train")
     p2.add_argument("--seed-labeled", default=str(DEFAULT_TRAINING_DIR / "category_training_data.csv"))
     p2.add_argument("--unlabeled", default=str(DEFAULT_TRAINING_DIR / "unlabeled_transactions.csv"))
@@ -193,7 +205,6 @@ def main():
     p2.add_argument("--max-add-per-round", type=int, default=2000)
     p2.set_defaults(func=cmd_self_train)
 
-    # train
     p3 = sub.add_parser("train")
     p3.add_argument("--labeled-csv", default=str(DEFAULT_TRAINING_DIR / "expanded_labeled.csv"))
     p3.add_argument("--taxonomy", default=str(DEFAULT_TAXONOMY))
