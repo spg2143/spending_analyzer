@@ -1,0 +1,24 @@
+{
+  "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+  "taxonomy": [
+    "Income",
+    "Transfers",
+    "Rent",
+    "Utilities",
+    "Groceries",
+    "Dining",
+    "Transport",
+    "Shopping",
+    "Subscriptions",
+    "Travel",
+    "Healthcare",
+    "Fees",
+    "Taxes",
+    "Cash Withdrawal",
+    "Other",
+    "Uncategorized"
+  ],
+  "top_k": 8,
+  "min_similarity": 0.55,
+  "min_winner_share": 0.55
+}

@@ -1,0 +1,24 @@
+{
+  "text": [
+    "electricity bill",
+    "internet bill",
+    "gas utility invoice",
+    "water bill",
+    "energy supplier - monthly",
+    "tax prepayment",
+    "vat payment",
+    "quarterly estimated tax payment",
+    "sales tax remittance"
+  ],
+  "label": [
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "Taxes",
+    "Taxes",
+    "Taxes",
+    "Taxes"
+  ]
+}
