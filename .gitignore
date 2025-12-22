@@ -1,3 +1,19 @@
 .venv/
 __pycache__/
 .env
+# Don’t commit statement uploads or training outputs
+backend/data/**/*.csv
+backend/data/**/*.pdf
+backend/data/**/*.xlsx
+backend/data/**/*.xls
+
+# Keep runtime rules
+!backend/data/merchant_rules.json
+
+# Common exports / label rounds
+**/transactions_export*.csv
+**/_tmp*.csv
+**/suggested_labels*.csv
+**/expanded_labeled*.csv
+**/manual_labels*.csv
+**/unlabeled*.csv
