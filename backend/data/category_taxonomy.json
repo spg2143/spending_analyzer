@@ -1,20 +1,19 @@
 {
   "categories": [
-    "Income",
-    "Transfers",
-    "Rent",
+    "Sales Income",
+    "Other Income",
+    "Interest & Other Income",
+    "Owner Contribution",
+    "Payroll & Contractors",
+    "Rent & Office",
     "Utilities",
-    "Groceries",
-    "Dining",
-    "Transport",
-    "Shopping",
-    "Subscriptions",
-    "Travel",
-    "Healthcare",
-    "Fees",
+    "Travel & Transport",
+    "Advertising & Marketing",
+    "Supplies & Inventory",
+    "Software & Subscriptions",
+    "Bank & Fees",
     "Taxes",
-    "Cash Withdrawal",
-    "Other",
+    "Other Expense",
     "Uncategorized"
   ]
 }

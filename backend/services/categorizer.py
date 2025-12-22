@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import pandas as pd
 
 from backend.services.category_model import EmbeddingKNNCategoryModel
 
-# Paths (match your repo layout)
 _BACKEND_DIR = Path(__file__).resolve().parents[1]  # .../backend
-TAXONOMY_PATH = _BACKEND_DIR / "data" / "category_taxonomy.json"
-ARTIFACT_DIR = _BACKEND_DIR / "models" / "category_knn"  # new artifacts live here
+ARTIFACT_DIR = _BACKEND_DIR / "models" / "category_knn"
 
-# Global cached model (loaded once)
 _MODEL = None
 
 
@@ -42,37 +39,63 @@ def _safe_date_to_str(x) -> str:
         return str(x)[:10]
 
 
-def _direction_from_amount(a) -> str:
-    try:
-        if a is None or (isinstance(a, float) and pd.isna(a)):
-            return "unknown"
-        a = float(a)
-        if a > 0:
-            return "inflow"
-        if a < 0:
-            return "outflow"
-        return "unknown"
-    except Exception:
-        return "unknown"
+def _infer_outflow_is_positive(df: pd.DataFrame) -> bool:
+    """
+    Many credit card statements have:
+      - purchases/charges as positive
+      - payments/credits as negative
 
+    This tries to infer that convention.
+    Returns True if we believe outflows are positive.
+    """
+    a = pd.to_numeric(df.get("amount", pd.Series([], dtype=float)), errors="coerce").dropna()
+    if a.empty:
+        return False
 
-def _build_model_text(description: str, direction: str) -> str:
-    # Add direction token to help model separate income vs spend
-    desc = (description or "").strip()
-    return f"{desc} | {direction}"
+    pos = a[a > 0]
+    neg = a[a < 0]
+
+    # If we only have one sign, don't flip (bank statements vary)
+    if pos.empty or neg.empty:
+        return False
+
+    desc = df.get("description", pd.Series([""] * len(df))).astype(str).str.lower()
+
+    payment_like = desc.str.contains(
+        r"\b(payment|thank you|autopay|online payment|pmt)\b", regex=True
+    )
+
+    # Heuristic signals:
+    # - many more positives than negatives
+    # - negatives often "payment"
+    # - negatives often much larger (monthly payment) than typical purchases
+    pos_count = len(pos)
+    neg_count = len(neg)
+    neg_payment_share = float(payment_like[df["amount"] < 0].mean()) if neg_count else 0.0
+    pos_payment_share = float(payment_like[df["amount"] > 0].mean()) if pos_count else 0.0
+
+    pos_median = float(pos.median()) if pos_count else 0.0
+    neg_median_abs = float(neg.abs().median()) if neg_count else 0.0
+
+    if (pos_count >= neg_count * 2) and (neg_payment_share >= 0.4) and (pos_payment_share <= 0.2):
+        return True
+
+    if (pos_count >= neg_count * 2) and (neg_median_abs > pos_median * 3):
+        return True
+
+    return False
 
 
 def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds:
-      - direction
+      - direction (inflow/outflow/unknown)
       - category
       - category_confidence
       - category_reason
     """
     df = df.copy()
 
-    # Ensure expected columns exist
     if "description" not in df.columns:
         df["description"] = ""
     if "amount" not in df.columns:
@@ -80,30 +103,39 @@ def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
         df["date"] = ""
 
-    # Normalize
     df["description"] = df["description"].astype(str).fillna("").str.strip()
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-    df["direction"] = df["amount"].apply(_direction_from_amount)
-
-    # Convert date to string early for JSON safety
     df["date"] = df["date"].apply(_safe_date_to_str)
 
-    model = _ensure_model()
+    outflow_is_positive = _infer_outflow_is_positive(df)
 
+    def direction_from_amount(a):
+        try:
+            if a is None or (isinstance(a, float) and pd.isna(a)):
+                return "unknown"
+            a = float(a)
+            if a == 0:
+                return "unknown"
+            if outflow_is_positive:
+                return "outflow" if a > 0 else "inflow"
+            else:
+                return "outflow" if a < 0 else "inflow"
+        except Exception:
+            return "unknown"
+
+    df["direction"] = df["amount"].apply(direction_from_amount)
+
+    model = _ensure_model()
     if model is None:
-        # No artifacts yet -> fallback
         df["category"] = "Uncategorized"
         df["category_confidence"] = 0.0
-        df["category_reason"] = "No model artifacts found. Train model to enable categorization."
+        df["category_reason"] = "No model artifacts found (backend/models/category_knn). Train the model."
         return df
 
-    cats = []
-    confs = []
-    reasons = []
-
+    cats, confs, reasons = [], [], []
     for _, row in df.iterrows():
-        text = _build_model_text(row.get("description", ""), row.get("direction", "unknown"))
-        pred = model.predict_one(text)
+        # IMPORTANT: we embed the description only (matches your labeled CSV)
+        pred = model.predict_one(row.get("description", ""))
         cats.append(pred.category)
         confs.append(pred.confidence)
         reasons.append(pred.reason)
@@ -115,48 +147,38 @@ def categorize_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_category_summary(df: pd.DataFrame) -> Dict:
-    """
-    Returns the shape your frontend expects:
-      summary = {
-        overall: {...},
-        by_category: [...],
-        suggestions: [...]
-      }
-    """
     df = df.copy()
     df["amount"] = pd.to_numeric(df.get("amount", 0.0), errors="coerce").fillna(0.0)
 
-    # Overall
-    inflow = df.loc[df["amount"] > 0, "amount"].sum()
-    outflow = df.loc[df["amount"] < 0, "amount"].abs().sum()
-    net = inflow - outflow
-    n_transactions = len(df)
+    # Use direction, not sign
+    outflows = df[df["direction"] == "outflow"].copy()
+    inflows = df[df["direction"] == "inflow"].copy()
 
-    # Statement period (best effort)
+    total_outflow = float(outflows["amount"].abs().sum())
+    total_inflow = float(inflows["amount"].abs().sum())
+    net = total_inflow - total_outflow
+
     dates = pd.to_datetime(df.get("date", ""), errors="coerce")
     period_start = dates.min().date().isoformat() if not pd.isna(dates.min()) else None
     period_end = dates.max().date().isoformat() if not pd.isna(dates.max()) else None
 
     overall = {
-        "total_inflow": float(inflow),
-        "total_outflow": float(outflow),
+        "total_inflow": total_inflow,
+        "total_outflow": total_outflow,
         "net": float(net),
-        "n_transactions": int(n_transactions),
+        "n_transactions": int(len(df)),
         "period_start": period_start,
         "period_end": period_end,
     }
 
-    # Spending by category (only outflows)
-    spend_df = df[df["amount"] < 0].copy()
-    spend_df["spend"] = spend_df["amount"].abs()
-
     by_category = []
-    if not spend_df.empty:
-        grp = spend_df.groupby("category", dropna=False)["spend"].agg(["sum", "count"]).reset_index()
-        total_spend = grp["sum"].sum() if grp["sum"].sum() != 0 else 1.0
+    if not outflows.empty:
+        outflows["spend"] = outflows["amount"].abs()
+        grp = outflows.groupby("category", dropna=False)["spend"].agg(["sum", "count"]).reset_index()
+        total_spend = float(grp["sum"].sum()) if float(grp["sum"].sum()) != 0 else 1.0
         grp["share"] = grp["sum"] / total_spend
-
         grp = grp.sort_values("sum", ascending=False)
+
         for _, r in grp.iterrows():
             by_category.append(
                 {
@@ -167,18 +189,15 @@ def build_category_summary(df: pd.DataFrame) -> Dict:
                 }
             )
 
-    # Suggestions (simple heuristic: top categories)
     suggestions = []
     for item in by_category[:5]:
-        cat = item["category"]
         total = item["total"]
         if total <= 0:
             continue
-        save_10 = total * 0.10
         suggestions.append(
             {
-                "category": cat,
-                "message": f"You spent about {total:.2f} in '{cat}'. Reducing this by 10% would save roughly {save_10:.2f} over this statement period.",
+                "category": item["category"],
+                "message": f"You spent about {total:.2f} in '{item['category']}'. Reducing this by 10% would save roughly {total * 0.10:.2f} over this statement period.",
             }
         )
 
